@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodexOrchestratorAgentResult",
+  "type": "object",
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": ["completed", "needs_approval", "blocked", "failed"]
+    },
+    "summary": { "type": "string" },
+    "handoff_notes": { "type": "string" },
+    "tests": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "proposed_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "role": {
+            "type": "string",
+            "enum": ["coordinator", "planner", "implementer", "reviewer", "qa"]
+          },
+          "depends_on_titles": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "requires_approval": { "type": "boolean" },
+          "auto_start": { "type": "boolean" }
+        },
+        "required": [
+          "title",
+          "description",
+          "role",
+          "depends_on_titles",
+          "requires_approval",
+          "auto_start"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "recipient_task_id": { "type": "string" },
+          "body": { "type": "string" }
+        },
+        "required": ["recipient_task_id", "body"],
+        "additionalProperties": false
+      }
+    },
+    "recommended_stage": {
+      "type": "string",
+      "enum": ["review", "waiting_approval", "done", "blocked"]
+    },
+    "approval_question": { "type": "string" }
+  },
+  "required": [
+    "outcome",
+    "summary",
+    "handoff_notes",
+    "tests",
+    "proposed_tasks",
+    "messages",
+    "recommended_stage",
+    "approval_question"
+  ],
+  "additionalProperties": false
+}
+

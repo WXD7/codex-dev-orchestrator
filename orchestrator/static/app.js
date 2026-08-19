@@ -1,0 +1,348 @@
+const state = {
+  projects: [],
+  tasks: [],
+  currentProject: null,
+  openTaskId: null,
+  polling: null,
+};
+
+const columns = [
+  ["backlog", "待处理"],
+  ["ready", "可执行"],
+  ["running", "执行中"],
+  ["waiting_approval", "等待确认"],
+  ["review", "评审"],
+  ["blocked", "阻塞"],
+  ["failed", "失败"],
+  ["done", "完成"],
+];
+
+const roles = {
+  coordinator: "技术协调者",
+  planner: "方案规划者",
+  implementer: "实现工程师",
+  reviewer: "独立评审者",
+  qa: "质量验证者",
+};
+
+const $ = (selector) => document.querySelector(selector);
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  return payload;
+}
+
+let toastTimer;
+function toast(message, error = false) {
+  const node = $("#toast");
+  node.textContent = message;
+  node.className = `toast show${error ? " error" : ""}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { node.className = "toast"; }, 3200);
+}
+
+async function loadHealth() {
+  try {
+    const health = await api("/api/health");
+    const node = $("#agent-health");
+    const agent = health.agent;
+    node.className = `health-card ${agent.ready ? "ok" : "error"}`;
+    node.querySelector("strong").textContent = agent.ready ? "Codex 执行器就绪" : "Codex 执行器不可用";
+    node.querySelector("small").textContent = agent.ready
+      ? `${agent.auth_status} · ${agent.workers} 个工位`
+      : (agent.problems[0] || "请运行 doctor");
+  } catch (error) {
+    $("#agent-health").className = "health-card error";
+  }
+}
+
+async function loadProjects(preferredId = null) {
+  const payload = await api("/api/projects");
+  state.projects = payload.projects;
+  renderProjects();
+  if (!state.projects.length) {
+    state.currentProject = null;
+    state.tasks = [];
+    renderEmpty();
+    return;
+  }
+  const target = preferredId || state.currentProject?.id || state.projects[0].id;
+  await selectProject(target);
+}
+
+function renderProjects() {
+  $("#project-list").innerHTML = state.projects.map((project) => `
+    <button class="project-item ${state.currentProject?.id === project.id ? "active" : ""}" data-project-id="${project.id}">
+      <span class="project-avatar">${escapeHtml(project.name.slice(0, 1).toUpperCase())}</span>
+      <span class="project-copy">
+        <strong>${escapeHtml(project.name)}</strong>
+        <small>${project.task_count || 0} 个任务 · ${project.running_count || 0} 个执行中</small>
+      </span>
+    </button>
+  `).join("");
+}
+
+async function selectProject(projectId) {
+  const project = state.projects.find((item) => item.id === projectId);
+  if (!project) return;
+  state.currentProject = project;
+  renderProjects();
+  $("#project-title").textContent = project.name;
+  $("#project-meta").textContent = `${project.repo_path} · 基准 ${project.base_branch} · ${project.auto_start ? "自动调度已开启" : "手动调度"}`;
+  $("#new-task").disabled = false;
+  $("#onboarding").classList.add("hidden");
+  $("#board-section").classList.remove("hidden");
+  await loadTasks();
+}
+
+function renderEmpty() {
+  $("#project-title").textContent = "选择或添加一个 Git 工程";
+  $("#project-meta").textContent = "任务、worktree、消息、审批和 Codex 执行记录集中在这里。";
+  $("#new-task").disabled = true;
+  $("#onboarding").classList.remove("hidden");
+  $("#board-section").classList.add("hidden");
+}
+
+async function loadTasks(silent = false) {
+  if (!state.currentProject) return;
+  try {
+    const payload = await api(`/api/projects/${state.currentProject.id}/tasks`);
+    state.tasks = payload.tasks;
+    renderBoard();
+    if (state.openTaskId) await openTask(state.openTaskId, true);
+  } catch (error) {
+    if (!silent) toast(error.message, true);
+  }
+}
+
+function renderBoard() {
+  const counts = Object.fromEntries(columns.map(([status]) => [status, 0]));
+  state.tasks.forEach((task) => { counts[task.status] = (counts[task.status] || 0) + 1; });
+  $("#board-counts").textContent = `${state.tasks.length} 个任务 · ${counts.running} 个正在执行 · ${counts.waiting_approval} 个等待你确认`;
+  $("#kanban").innerHTML = columns.map(([status, label]) => {
+    const tasks = state.tasks.filter((task) => task.status === status);
+    return `
+      <section class="column" data-status="${status}">
+        <div class="column-header">
+          <div class="column-title"><span class="status-dot"></span><h3>${label}</h3></div>
+          <span class="column-count">${tasks.length}</span>
+        </div>
+        <div class="task-stack">
+          ${tasks.length ? tasks.map(taskCard).join("") : '<div class="empty-column">暂无任务</div>'}
+        </div>
+      </section>`;
+  }).join("");
+}
+
+function taskCard(task) {
+  const flags = [
+    task.allow_delegation ? '<span class="tiny-flag" title="可委派子任务">↳</span>' : "",
+    task.requires_approval ? '<span class="tiny-flag" title="需要人工批准">✓</span>' : "",
+    task.worktree_path ? '<span class="tiny-flag" title="已有独立 worktree">⑂</span>' : "",
+  ].join("");
+  const body = task.summary || task.description || "尚无说明";
+  return `
+    <article class="task-card" data-task-id="${task.id}">
+      <div class="task-card-top"><span class="role-pill">${escapeHtml(roles[task.role] || task.role)}</span><span class="task-id">${escapeHtml(task.id.slice(-6))}</span></div>
+      <h4>${escapeHtml(task.title)}</h4>
+      <p>${escapeHtml(body)}</p>
+      <div class="task-card-footer"><span>P${task.priority}</span><span class="tiny-flags">${flags}</span></div>
+    </article>`;
+}
+
+async function openTask(taskId, silent = false) {
+  try {
+    const task = await api(`/api/tasks/${taskId}`);
+    state.openTaskId = taskId;
+    $("#drawer-id").textContent = `${task.id} · ${roles[task.role] || task.role}`;
+    $("#drawer-title").textContent = task.title;
+    $("#drawer-body").innerHTML = renderTaskDetail(task);
+    $("#task-drawer").classList.add("open");
+    $("#task-drawer").setAttribute("aria-hidden", "false");
+    $("#drawer-backdrop").classList.add("open");
+    bindDrawer(task);
+  } catch (error) {
+    if (!silent) toast(error.message, true);
+  }
+}
+
+function renderTaskDetail(task) {
+  const statusLabel = Object.fromEntries(columns)[task.status] || task.status;
+  const actions = taskActions(task);
+  const approval = task.approval ? `
+    <div class="approval-box"><strong>等待你的决定</strong><p>${escapeHtml(task.approval.question)}</p></div>` : "";
+  const error = task.error ? `<div class="error-box">${escapeHtml(task.error)}</div>` : "";
+  const messages = task.messages.length ? task.messages.map((message) => `
+    <div class="message ${escapeHtml(message.kind)}">
+      <div class="message-head"><strong>${escapeHtml(message.sender)}</strong><span>${escapeHtml(message.created_at)}</span></div>
+      <div class="message-body">${escapeHtml(message.body)}</div>
+    </div>`).join("") : '<div class="empty-column">还没有消息</div>';
+  const dependencies = task.dependencies.length
+    ? task.dependencies.map((item) => `${escapeHtml(item.title)}（${Object.fromEntries(columns)[item.status] || item.status}）`).join("、")
+    : "无";
+  const children = task.children.length
+    ? task.children.map((item) => `${escapeHtml(item.title)}（${Object.fromEntries(columns)[item.status] || item.status}）`).join("、")
+    : "无";
+  const events = (task.runs || []).slice(0, 8).map((run) => `
+    <div class="event"><strong>${escapeHtml(run.status)} · ${escapeHtml(run.started_at)}</strong><pre>${escapeHtml(JSON.stringify(run.usage || {}, null, 2))}</pre></div>
+  `).join("") || '<div class="empty-column">尚未执行</div>';
+  return `
+    <div class="meta-strip">
+      <div class="meta-box"><span>状态</span><strong>${escapeHtml(statusLabel)}</strong></div>
+      <div class="meta-box"><span>分支</span><strong>${escapeHtml(task.branch_name || "执行时创建")}</strong></div>
+      <div class="meta-box"><span>会话</span><strong>${escapeHtml(task.session_id ? task.session_id.slice(0, 8) : "尚未建立")}</strong></div>
+    </div>
+    ${error}${approval}
+    <div class="task-actions">${actions}</div>
+    <section class="detail-section"><h3>目标与边界</h3><div class="detail-text">${escapeHtml(task.description || "未填写")}</div></section>
+    <section class="detail-section"><h3>Agent 摘要</h3><div class="detail-text">${escapeHtml(task.summary || "Agent 尚未提交摘要。")}</div></section>
+    <section class="detail-section"><h3>交接说明</h3><div class="detail-text">${escapeHtml(task.handoff || "暂无交接信息。")}</div></section>
+    <section class="detail-section"><h3>任务关系</h3><div class="detail-text">前置：${dependencies}\n子任务：${children}</div></section>
+    <section class="detail-section">
+      <h3>对话与审批</h3><div class="message-list">${messages}</div>
+      <form class="message-form" id="message-form"><input name="body" required placeholder="给这个 Agent 留消息…"><button class="button secondary small">发送</button></form>
+    </section>
+    <section class="detail-section"><h3>最近运行</h3><div class="event-list">${events}</div></section>
+    <section class="detail-section"><h3>分支变更</h3><button class="button secondary small" id="load-changes">加载完整 Diff</button><div id="changes-panel"></div></section>`;
+}
+
+function taskActions(task) {
+  if (["backlog", "ready"].includes(task.status)) return '<button class="button primary small" data-action="start">启动 Codex</button>';
+  if (["failed", "blocked"].includes(task.status)) return '<button class="button primary small" data-action="retry">重试任务</button>';
+  if (task.status === "waiting_approval") return `
+    <button class="button primary small" data-action="approve">批准</button>
+    <button class="button danger small" data-action="reject">拒绝并反馈</button>`;
+  if (task.status === "review") return `
+    <button class="button primary small" data-action="accept-review">评审通过</button>
+    <button class="button danger small" data-action="request-changes">要求修改</button>`;
+  if (task.status === "running") return '<button class="button secondary small" disabled>Codex 正在工作</button>';
+  return "";
+}
+
+function bindDrawer(task) {
+  $("#message-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const body = new FormData(event.currentTarget).get("body");
+    try {
+      await api(`/api/tasks/${task.id}/message`, { method: "POST", body: JSON.stringify({ body }) });
+      await openTask(task.id, true);
+    } catch (error) { toast(error.message, true); }
+  });
+  $("#load-changes")?.addEventListener("click", async () => {
+    const panel = $("#changes-panel");
+    panel.innerHTML = '<p class="detail-text">正在读取分支差异…</p>';
+    try {
+      const changes = await api(`/api/tasks/${task.id}/changes`);
+      panel.innerHTML = `<pre class="code-panel">${escapeHtml([changes.commits, changes.stat, changes.diff, changes.status].filter(Boolean).join("\n\n")) || "暂无代码变更"}</pre>`;
+    } catch (error) { panel.innerHTML = `<div class="error-box">${escapeHtml(error.message)}</div>`; }
+  });
+}
+
+async function taskAction(action, taskId) {
+  try {
+    if (action === "start" || action === "retry") {
+      await api(`/api/tasks/${taskId}/${action}`, { method: "POST", body: "{}" });
+      toast("任务已进入执行队列");
+    } else if (["approve", "reject"].includes(action)) {
+      const note = window.prompt(action === "approve" ? "批准说明（可选）" : "请说明拒绝原因和修改要求") ?? "";
+      if (action === "reject" && !note.trim()) return;
+      await api(`/api/tasks/${taskId}/approval`, { method: "POST", body: JSON.stringify({ approved: action === "approve", note }) });
+      toast(action === "approve" ? "已批准" : "反馈已交还 Agent");
+    } else {
+      const accepted = action === "accept-review";
+      const note = window.prompt(accepted ? "评审说明（可选）" : "请填写修改要求") ?? "";
+      if (!accepted && !note.trim()) return;
+      await api(`/api/tasks/${taskId}/review`, { method: "POST", body: JSON.stringify({ accepted, note }) });
+      toast(accepted ? "任务已通过评审" : "任务已返回修改");
+    }
+    await loadTasks(true);
+  } catch (error) { toast(error.message, true); }
+}
+
+function closeDrawer() {
+  state.openTaskId = null;
+  $("#task-drawer").classList.remove("open");
+  $("#task-drawer").setAttribute("aria-hidden", "true");
+  $("#drawer-backdrop").classList.remove("open");
+}
+
+function openProjectDialog() { $("#project-dialog").showModal(); }
+function openTaskDialog() {
+  if (!state.currentProject) return;
+  const parent = $("#task-form [name=parent_id]");
+  const dependencies = $("#task-form [name=dependencies]");
+  const options = state.tasks.filter((task) => task.status !== "done").map((task) => `<option value="${task.id}">${escapeHtml(task.title)} · ${escapeHtml(Object.fromEntries(columns)[task.status] || task.status)}</option>`).join("");
+  parent.innerHTML = `<option value="">无</option>${options}`;
+  dependencies.innerHTML = state.tasks.map((task) => `<option value="${task.id}">${escapeHtml(task.title)}</option>`).join("");
+  $("#task-dialog").showModal();
+}
+
+$("#project-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  data.auto_start = form.elements.auto_start.checked;
+  try {
+    const project = await api("/api/projects", { method: "POST", body: JSON.stringify(data) });
+    form.closest("dialog").close(); form.reset();
+    await loadProjects(project.id); toast("项目已接入");
+  } catch (error) { toast(error.message, true); }
+});
+
+$("#task-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const formData = new FormData(form);
+  const data = Object.fromEntries(formData);
+  data.project_id = state.currentProject.id;
+  data.dependencies = formData.getAll("dependencies");
+  ["requires_approval", "allow_delegation", "auto_start", "start_now"].forEach((key) => { data[key] = form.elements[key].checked; });
+  data.priority = Number(data.priority);
+  try {
+    const task = await api("/api/tasks", { method: "POST", body: JSON.stringify(data) });
+    form.closest("dialog").close(); form.reset();
+    await loadTasks(); await openTask(task.id); toast("任务已创建");
+  } catch (error) { toast(error.message, true); }
+});
+
+document.addEventListener("click", async (event) => {
+  const project = event.target.closest("[data-project-id]");
+  if (project) await selectProject(project.dataset.projectId);
+  const task = event.target.closest("[data-task-id]");
+  if (task) await openTask(task.dataset.taskId);
+  const action = event.target.closest("[data-action]");
+  if (action && state.openTaskId) await taskAction(action.dataset.action, state.openTaskId);
+  if (event.target.closest(".dialog-close")) event.target.closest("dialog").close();
+});
+
+$("#new-project").addEventListener("click", openProjectDialog);
+$("#onboarding-project").addEventListener("click", openProjectDialog);
+$("#new-task").addEventListener("click", openTaskDialog);
+$("#refresh-board").addEventListener("click", () => loadTasks());
+$("#close-drawer").addEventListener("click", closeDrawer);
+$("#drawer-backdrop").addEventListener("click", closeDrawer);
+
+async function boot() {
+  await Promise.all([loadHealth(), loadProjects()]);
+  state.polling = setInterval(() => {
+    loadHealth();
+    if (state.currentProject) loadTasks(true);
+  }, 3000);
+}
+
+boot().catch((error) => toast(error.message, true));
+

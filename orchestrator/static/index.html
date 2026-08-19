@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex 工程编排台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">C</div>
+        <div>
+          <strong>Codex 编排台</strong>
+          <span>Local engineering workflow</span>
+        </div>
+      </div>
+
+      <div class="sidebar-heading">
+        <span>工程项目</span>
+        <button class="icon-button" id="new-project" title="添加项目">＋</button>
+      </div>
+      <nav id="project-list" class="project-list"></nav>
+
+      <div class="sidebar-footer">
+        <div id="agent-health" class="health-card loading">
+          <span class="health-dot"></span>
+          <div>
+            <strong>正在检查 Codex</strong>
+            <small>订阅登录与执行器</small>
+          </div>
+        </div>
+        <p>只在本机运行 · 不使用 API Key</p>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">AI DEVELOPMENT CONTROL PLANE</p>
+          <h1 id="project-title">选择或添加一个 Git 工程</h1>
+          <p id="project-meta" class="project-meta">任务、worktree、消息、审批和 Codex 执行记录集中在这里。</p>
+        </div>
+        <div class="topbar-actions">
+          <button class="button secondary" id="refresh-board">刷新</button>
+          <button class="button primary" id="new-task" disabled>新建任务</button>
+        </div>
+      </header>
+
+      <section id="onboarding" class="onboarding">
+        <div class="onboarding-orbit"><span>C</span></div>
+        <p class="eyebrow">FIRST WORKSPACE</p>
+        <h2>把一个本地 Git 仓库接入编排台</h2>
+        <p>项目代码不会上传。每个 Agent 任务会在独立 worktree 中运行，Codex 使用你当前的 ChatGPT 订阅登录。</p>
+        <button class="button primary" id="onboarding-project">添加第一个项目</button>
+      </section>
+
+      <section id="board-section" class="board-section hidden">
+        <div class="board-toolbar">
+          <div class="legend">
+            <span><i class="legend-dot automatic"></i>可自动执行</span>
+            <span><i class="legend-dot approval"></i>需要人工确认</span>
+            <span><i class="legend-dot isolated"></i>独立 worktree</span>
+          </div>
+          <div id="board-counts" class="board-counts"></div>
+        </div>
+        <div id="kanban" class="kanban"></div>
+      </section>
+    </main>
+
+    <aside id="task-drawer" class="task-drawer" aria-hidden="true">
+      <div class="drawer-header">
+        <div>
+          <p id="drawer-id" class="eyebrow"></p>
+          <h2 id="drawer-title">任务详情</h2>
+        </div>
+        <button class="icon-button" id="close-drawer" aria-label="关闭">×</button>
+      </div>
+      <div id="drawer-body" class="drawer-body"></div>
+    </aside>
+    <div id="drawer-backdrop" class="drawer-backdrop"></div>
+  </div>
+
+  <dialog id="project-dialog" class="dialog">
+    <form id="project-form" method="dialog">
+      <div class="dialog-header">
+        <div><p class="eyebrow">REGISTER REPOSITORY</p><h2>添加工程项目</h2></div>
+        <button type="button" class="icon-button dialog-close">×</button>
+      </div>
+      <label>项目名称<input name="name" required placeholder="例如：权限中心"></label>
+      <label>本地 Git 仓库绝对路径<input name="repo_path" required placeholder="/Users/name/Projects/my-app"></label>
+      <label>基准分支或引用<input name="base_branch" value="HEAD" required></label>
+      <label>工作流
+        <select name="workflow">
+          <option value="feature-dev">完整功能开发</option>
+          <option value="plan-build">计划与实现</option>
+          <option value="architecture">架构评审</option>
+          <option value="kanban">普通看板</option>
+        </select>
+      </label>
+      <label class="check-row"><input type="checkbox" name="auto_start">依赖满足后自动启动任务</label>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary dialog-close">取消</button>
+        <button type="submit" class="button primary">验证并添加</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="task-dialog" class="dialog wide">
+    <form id="task-form" method="dialog">
+      <div class="dialog-header">
+        <div><p class="eyebrow">CREATE WORK UNIT</p><h2>新建 Agent 任务</h2></div>
+        <button type="button" class="icon-button dialog-close">×</button>
+      </div>
+      <label>任务标题<input name="title" required placeholder="例如：规划并拆解登录功能"></label>
+      <label>目标和验收要求<textarea name="description" rows="7" required placeholder="描述业务目标、约束、成功标准和不可触碰的边界。"></textarea></label>
+      <div class="form-grid">
+        <label>Agent 角色
+          <select name="role">
+            <option value="coordinator">技术协调者</option>
+            <option value="planner">方案规划者</option>
+            <option value="implementer" selected>实现工程师</option>
+            <option value="reviewer">独立评审者</option>
+            <option value="qa">质量验证者</option>
+          </select>
+        </label>
+        <label>优先级<input name="priority" type="number" min="0" max="100" value="50"></label>
+        <label>父任务<select name="parent_id"><option value="">无</option></select></label>
+        <label>前置依赖<select name="dependencies" multiple size="4"></select></label>
+      </div>
+      <div class="check-grid">
+        <label class="check-row"><input type="checkbox" name="requires_approval">交付后必须人工批准</label>
+        <label class="check-row"><input type="checkbox" name="allow_delegation">允许 Agent 创建子任务</label>
+        <label class="check-row"><input type="checkbox" name="auto_start">依赖满足后自动执行</label>
+        <label class="check-row"><input type="checkbox" name="start_now">创建后立即执行</label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary dialog-close">取消</button>
+        <button type="submit" class="button primary">创建任务</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
+
