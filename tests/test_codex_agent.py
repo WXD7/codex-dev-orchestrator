@@ -28,6 +28,7 @@ if args == ["--version"]:
     print("codex-cli fake")
     raise SystemExit(0)
 if args == ["login", "status"]:
+    print("WARNING: harmless setup warning")
     print("Logged in using ChatGPT")
     raise SystemExit(0)
 if "exec" in args:
@@ -67,7 +68,9 @@ class CodexAgentTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_preflight_requires_chatgpt_and_run_parses_jsonl(self):
-        self.assertTrue(self.agent.preflight().ok)
+        preflight = self.agent.preflight()
+        self.assertTrue(preflight.ok)
+        self.assertEqual(preflight.auth_status, "Logged in using ChatGPT")
         events = []
         result = self.agent.run(
             "run_1",
@@ -88,6 +91,7 @@ class CodexAgentTests(unittest.TestCase):
         )
         self.assertIn("workspace-write", command)
         self.assertNotIn("danger-full-access", command)
+        self.assertNotIn("--approve-for-me", command)
         old = os.environ.get("OPENAI_API_KEY")
         os.environ["OPENAI_API_KEY"] = "must-not-leak"
         try:
@@ -98,7 +102,16 @@ class CodexAgentTests(unittest.TestCase):
             else:
                 os.environ["OPENAI_API_KEY"] = old
 
+    def test_planners_are_read_only_but_reviewers_can_run_tests(self):
+        planner = self.agent.build_command(
+            "planner", self.root, "plan", self.root / "plan.json"
+        )
+        reviewer = self.agent.build_command(
+            "reviewer", self.root, "review", self.root / "review.json"
+        )
+        self.assertIn("read-only", planner)
+        self.assertIn("workspace-write", reviewer)
+
 
 if __name__ == "__main__":
     unittest.main()
-

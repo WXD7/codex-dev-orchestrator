@@ -122,6 +122,9 @@ async function loadTasks(silent = false) {
   try {
     const payload = await api(`/api/projects/${state.currentProject.id}/tasks`);
     state.tasks = payload.tasks;
+    state.currentProject.task_count = state.tasks.length;
+    state.currentProject.running_count = state.tasks.filter((task) => task.status === "running").length;
+    renderProjects();
     renderBoard();
     if (state.openTaskId) await openTask(state.openTaskId, true);
   } catch (error) {
@@ -257,21 +260,60 @@ async function taskAction(action, taskId) {
     if (action === "start" || action === "retry") {
       await api(`/api/tasks/${taskId}/${action}`, { method: "POST", body: "{}" });
       toast("任务已进入执行队列");
-    } else if (["approve", "reject"].includes(action)) {
-      const note = window.prompt(action === "approve" ? "批准说明（可选）" : "请说明拒绝原因和修改要求") ?? "";
-      if (action === "reject" && !note.trim()) return;
-      await api(`/api/tasks/${taskId}/approval`, { method: "POST", body: JSON.stringify({ approved: action === "approve", note }) });
-      toast(action === "approve" ? "已批准" : "反馈已交还 Agent");
     } else {
-      const accepted = action === "accept-review";
-      const note = window.prompt(accepted ? "评审说明（可选）" : "请填写修改要求") ?? "";
-      if (!accepted && !note.trim()) return;
-      await api(`/api/tasks/${taskId}/review`, { method: "POST", body: JSON.stringify({ accepted, note }) });
-      toast(accepted ? "任务已通过评审" : "任务已返回修改");
+      openDecisionDialog(action, taskId);
+      return;
     }
     await loadTasks(true);
   } catch (error) { toast(error.message, true); }
 }
+
+function openDecisionDialog(action, taskId) {
+  const copy = {
+    approve: ["批准任务结果", "批准后该任务完成，并释放满足依赖条件的下游任务。", "确认批准"],
+    reject: ["拒绝并退回修改", "请写明拒绝原因和期望的修改方向，Agent 将在同一会话中继续。", "退回修改"],
+    "accept-review": ["通过人工评审", "通过后任务完成，并释放下游评审或 QA 任务。", "评审通过"],
+    "request-changes": ["要求继续修改", "请给出具体、可验证的修改要求，Agent 将在同一 worktree 和会话中继续。", "退回修改"],
+  }[action];
+  if (!copy) return;
+  const form = $("#decision-form");
+  form.reset();
+  form.elements.task_id.value = taskId;
+  form.elements.action.value = action;
+  $("#decision-title").textContent = copy[0];
+  $("#decision-help").textContent = copy[1];
+  $("#decision-submit").textContent = copy[2];
+  $("#decision-submit").className = `button ${["reject", "request-changes"].includes(action) ? "danger" : "primary"}`;
+  $("#decision-dialog").showModal();
+}
+
+$("#decision-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const action = form.elements.action.value;
+  const taskId = form.elements.task_id.value;
+  const note = form.elements.note.value.trim();
+  if (["reject", "request-changes"].includes(action) && !note) {
+    toast("退回任务时必须填写修改要求", true);
+    return;
+  }
+  try {
+    if (["approve", "reject"].includes(action)) {
+      await api(`/api/tasks/${taskId}/approval`, {
+        method: "POST",
+        body: JSON.stringify({ approved: action === "approve", note }),
+      });
+    } else {
+      await api(`/api/tasks/${taskId}/review`, {
+        method: "POST",
+        body: JSON.stringify({ accepted: action === "accept-review", note }),
+      });
+    }
+    $("#decision-dialog").close();
+    toast(["approve", "accept-review"].includes(action) ? "决定已记录" : "修改要求已交还 Agent");
+    await loadTasks(true);
+  } catch (error) { toast(error.message, true); }
+});
 
 function closeDrawer() {
   state.openTaskId = null;
@@ -345,4 +387,3 @@ async function boot() {
 }
 
 boot().catch((error) => toast(error.message, true));
-

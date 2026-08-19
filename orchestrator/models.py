@@ -27,7 +27,6 @@ class TaskRole(str, Enum):
 READ_ONLY_ROLES = {
     TaskRole.COORDINATOR.value,
     TaskRole.PLANNER.value,
-    TaskRole.REVIEWER.value,
 }
 
 
@@ -48,4 +47,3 @@ class PreflightResult:
     version: str
     auth_status: str
     problems: List[str] = field(default_factory=list)
-

@@ -45,7 +45,16 @@ class CodexAgent:
         version_result = self._quick([self.binary, "--version"])
         auth_result = self._quick([self.binary, "login", "status"])
         version = (version_result.stdout or version_result.stderr).strip()
-        auth_status = (auth_result.stdout or auth_result.stderr).strip()
+        raw_auth_status = "\n".join(
+            part.strip()
+            for part in (auth_result.stdout, auth_result.stderr)
+            if part and part.strip()
+        )
+        auth_lines = [line.strip() for line in raw_auth_status.splitlines() if line.strip()]
+        auth_status = next(
+            (line for line in auth_lines if "logged in using chatgpt" in line.lower()),
+            raw_auth_status,
+        )
         if version_result.returncode != 0:
             problems.append("Could not read Codex CLI version")
         if auth_result.returncode != 0:
@@ -110,8 +119,6 @@ class CodexAgent:
             "-o",
             str(output_path),
         ]
-        if sandbox == "workspace-write":
-            command.append("--approve-for-me")
         if self.model:
             command.extend(["--model", self.model])
         command.append(prompt)
@@ -222,6 +229,12 @@ class CodexAgent:
             on_event(event_type, event)
 
         return_code = proc.wait() if proc.poll() is None else int(proc.returncode or 0)
+        stdout_thread.join(timeout=2)
+        stderr_thread.join(timeout=2)
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
         if timed_out:
             return_code = 124
             stderr_lines.append("Codex run exceeded the configured timeout")
@@ -249,4 +262,3 @@ class CodexAgent:
             stderr_tail="\n".join(stderr_lines[-300:]),
             command=self.redacted_command(command),
         )
-

@@ -85,7 +85,34 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(self.db.get_task(parent["id"])["status"], "done")
         self.assertEqual(self.db.get_task(child["id"])["status"], "ready")
 
+    def test_monitor_does_not_repeat_an_agent_reported_block(self):
+        task = self.db.create_task(self.project["id"], "Needs external service")
+        self.db.update_task(
+            task["id"], status="blocked", error="External service unavailable"
+        )
+
+        time.sleep(1.8)
+
+        self.assertEqual(self.db.get_task(task["id"])["status"], "blocked")
+        self.assertEqual(self.db.list_runs(task["id"]), [])
+
+    def test_empty_agent_block_summary_still_gets_a_stable_reason(self):
+        task = self.db.create_task(self.project["id"], "Ambiguous blocker")
+        final = {
+            "outcome": "blocked",
+            "summary": "",
+            "handoff_notes": "",
+            "proposed_tasks": [],
+            "messages": [],
+            "recommended_stage": "blocked",
+        }
+
+        self.scheduler._apply_result(task, final, None)
+
+        blocked = self.db.get_task(task["id"])
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertTrue(blocked["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

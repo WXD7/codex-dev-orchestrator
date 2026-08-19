@@ -38,6 +38,15 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cycle"):
             self.db.add_dependency(first["id"], second["id"])
 
+    def test_agent_reported_block_is_not_treated_as_dependency_block(self):
+        task = self.db.create_task(self.project["id"], "Needs external access")
+        self.db.update_task(task["id"], status="blocked", error="Network unavailable")
+
+        changed = self.db.refresh_unblocked_tasks(self.project["id"])
+
+        self.assertEqual(changed, [])
+        self.assertEqual(self.db.get_task(task["id"])["status"], "blocked")
+
     def test_messages_and_approval_round_trip(self):
         task = self.db.create_task(self.project["id"], "Plan")
         message = self.db.add_message(task["id"], "Human", "Please continue")
@@ -51,4 +60,3 @@ class DatabaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

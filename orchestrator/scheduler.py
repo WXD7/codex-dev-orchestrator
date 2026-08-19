@@ -76,9 +76,8 @@ class TaskScheduler:
     def _monitor_loop(self) -> None:
         while not self._shutdown.wait(1.5):
             try:
-                unblocked = self.db.refresh_unblocked_tasks()
-                candidates = list(dict.fromkeys(unblocked + self.db.list_auto_startable()))
-                for task_id in candidates:
+                self.db.refresh_unblocked_tasks()
+                for task_id in self.db.list_auto_startable():
                     try:
                         self.submit(task_id)
                     except RuntimeError:
@@ -245,10 +244,11 @@ class TaskScheduler:
         if outcome == "failed":
             raise RuntimeError(summary or "Agent reported failure")
         if outcome == "blocked" or recommended == "blocked":
+            reason = summary or "Agent reported an external blocker without details"
             self.db.update_task(
-                task["id"], status=TaskStatus.BLOCKED.value, error=summary
+                task["id"], status=TaskStatus.BLOCKED.value, error=reason
             )
-            self.db.add_event(task["id"], run_id, "task.blocked", {"reason": summary})
+            self.db.add_event(task["id"], run_id, "task.blocked", {"reason": reason})
             return
         if outcome == "needs_approval" or recommended == "waiting_approval":
             question = question or "请确认下一步如何处理此任务。"
@@ -393,4 +393,3 @@ class TaskScheduler:
         )
         self.db.update_task(task_id, status=TaskStatus.READY.value, queued=False)
         self.submit(task_id)
-

@@ -167,6 +167,7 @@ textarea { resize: vertical; }
 .dialog label.check-row, .check-row { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
 .check-row input { width: auto; margin: 0; accent-color: var(--green); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 6px; }
+.decision-help { color: var(--muted); font-size: 11px; line-height: 1.6; margin: -5px 0 17px; }
 .toast { position: fixed; z-index: 100; left: 50%; bottom: 25px; transform: translate(-50%, 20px); background: #14231d; color: white; border-radius: 11px; padding: 11px 16px; font-size: 11px; opacity: 0; pointer-events: none; transition: .2s ease; box-shadow: var(--shadow); }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast.error { background: #7d2f2b; }
@@ -176,4 +177,3 @@ textarea { resize: vertical; }
   .workspace { margin-left: 224px; width: calc(100% - 224px); padding-left: 25px; padding-right: 25px; }
   .task-drawer { width: 520px; }
 }
-

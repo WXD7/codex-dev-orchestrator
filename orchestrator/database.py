@@ -151,6 +151,13 @@ class Database:
                     ON approvals(task_id, created_at);
                 """
             )
+            approval_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(approvals)").fetchall()
+            }
+            if "kind" not in approval_columns:
+                conn.execute(
+                    "ALTER TABLE approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'resume'"
+                )
 
     @staticmethod
     def _row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -419,7 +426,10 @@ class Database:
         return bool(row and row["incomplete"] == 0)
 
     def refresh_unblocked_tasks(self, project_id: Optional[str] = None) -> List[str]:
-        sql = "SELECT id FROM tasks WHERE status = 'blocked'"
+        # An empty error marks dependency blocking. Agent-reported external
+        # blockers carry a reason in error and must remain blocked until a
+        # human explicitly retries them.
+        sql = "SELECT id FROM tasks WHERE status = 'blocked' AND error = ''"
         params: List[Any] = []
         if project_id:
             sql += " AND project_id = ?"
