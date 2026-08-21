@@ -13,6 +13,7 @@
 - 父子任务、显式依赖、循环依赖检查和完成后的自动解锁；
 - 协调 Agent 可提出最多 20 个子任务及其依赖；
 - 异构执行器：同一个任务图里，实现可以走 Codex，独立评审可以走 Claude Code；
+- 额度感知调度：读取登录账号的剩余比例和刷新时间，在执行器与高/中/经济模型之间自动分配；
 - 每个任务使用独立 Git worktree 和 `agent/...` 本地分支；
 - 下游任务从上游分支继续；有多个依赖时在自己的 worktree 中本地整合；
 - Codex JSONL 事件、结构化结论、token 使用量、会话 ID 和交接说明持久化；
@@ -81,10 +82,32 @@ python3 run.py serve --open
 
 ## 两种调度方式
 
-- 手动调度：任务依赖满足后进入“可执行”，由人点击“启动 Codex”。适合首次使用和高风险工程；
+- 手动调度：任务依赖满足后进入“可执行”，由人点击“智能启动”。适合首次使用和高风险工程；
 - 自动调度：项目或单个任务开启后，依赖满足即自动进入执行队列。人工审批和评审节点仍然生效。
 
 执行器默认有 2 个并发工位。并发任务各自拥有独立 worktree，不会在同一个工作目录互相覆盖。
+
+## 智能额度分配
+
+任务不指定执行器时，调度器会比较当前可用执行器的订阅额度，再决定由谁执行以及使用哪一档模型。它不是用账号价格硬猜额度：
+
+- Codex 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取 ChatGPT 套餐、已用比例、额度窗口和 `resetsAt`；不会读取 OAuth Token，也不会发送模型请求；
+- Claude Code 从 CLI/Agent SDK 的 `rate_limit_event` 读取 `utilization`、额度类型与 `resets_at`，只把不含凭据的快照写入 `.data/quota/claude-code.json`；
+- Claude 尚未运行、没有可验证快照时显示“额度待观测”，并按谨慎档处理，而不是伪造一个精确数字；
+- 额度触顶的自动任务保持 `ready`，等刷新后重新判断，不会被误记为代码执行失败；
+- 人在任务上明确指定执行器，或项目固定默认执行器时，人工选择优先；已有会话固定沿用原执行器和模型，避免跨平台恢复错误。
+
+策略分四档：充裕时允许高档模型处理复杂规划、实现和评审；适中时按角色选择；偏紧时降档；进入保留区时只用经济模型。离刷新不足 30 分钟时会适度放宽，因为同样的剩余额度在窗口末尾比窗口开头更值得使用。调度器不会自动购买额外用量，也不会自动消耗 Codex 的 rate-limit reset credit。
+
+默认模型档位：
+
+| 档位 | Codex | Claude Code |
+| --- | --- | --- |
+| 高 | `gpt-5.6-sol` | `opus` |
+| 中 | `gpt-5.6-terra` | `sonnet` |
+| 经济 | `gpt-5.6-luna` | `haiku` |
+
+Claude 官方从 2026-06-15 起把订阅账号上的 `claude -p` / Agent SDK 用量计入独立的月度 Agent SDK credit；本工程调用的是 `claude -p`，所以调度依据应以它实际返回的 rate-limit event 为准，而不能拿交互界面的 5 小时进度条代替。
 
 ## 作为 MCP 服务接入其他客户端
 
@@ -143,13 +166,21 @@ python3 run.py mcp
 | `ORCH_DATA_DIR` | 工程内 `.data` | SQLite、运行结果和 worktree 的位置 |
 | `ORCH_HOST` | `127.0.0.1` | Web 服务监听地址 |
 | `ORCH_PORT` | `8765` | Web 服务端口 |
-| `ORCH_MAX_WORKERS` | `2` | 同时运行的 Codex 任务数 |
+| `ORCH_MAX_WORKERS` | `2` | 同时运行的 Agent 任务数 |
 | `ORCH_CODEX_BINARY` | `codex` | Codex CLI 路径或命令名 |
-| `ORCH_CODEX_MODEL` | 空 | 可选的 Codex 模型覆盖；空表示使用本机默认配置 |
+| `ORCH_CODEX_MODEL` | 空 | 固定所有 Codex 任务的模型；空表示允许智能分档 |
+| `ORCH_CODEX_MODEL_HIGH` | `gpt-5.6-sol` | Codex 高档模型 |
+| `ORCH_CODEX_MODEL_BALANCED` | `gpt-5.6-terra` | Codex 中档模型 |
+| `ORCH_CODEX_MODEL_ECONOMY` | `gpt-5.6-luna` | Codex 经济模型 |
 | `ORCH_EXECUTORS` | `codex` | 启用的执行器，逗号分隔：`codex`、`claude-code` |
-| `ORCH_DEFAULT_EXECUTOR` | 列表第一个 | 任务和项目都没有指定时使用的执行器 |
+| `ORCH_DEFAULT_EXECUTOR` | 列表第一个 | 额度相近或未知时优先的执行器 |
 | `ORCH_CLAUDE_BINARY` | `claude`，回退 `CLAUDE_CODE_EXECPATH` | Claude Code CLI 路径或命令名 |
-| `ORCH_CLAUDE_MODEL` | 空 | 可选的 Claude Code 模型覆盖 |
+| `ORCH_CLAUDE_MODEL` | 空 | 固定所有 Claude Code 任务的模型；空表示允许智能分档 |
+| `ORCH_CLAUDE_MODEL_HIGH` | `opus` | Claude 高档模型 |
+| `ORCH_CLAUDE_MODEL_BALANCED` | `sonnet` | Claude 中档模型 |
+| `ORCH_CLAUDE_MODEL_ECONOMY` | `haiku` | Claude 经济模型 |
+| `ORCH_QUOTA_SCHEDULING` | `1` | 是否启用额度感知的执行器与模型选择 |
+| `ORCH_QUOTA_CACHE_SECONDS` | `60` | Codex 实时额度快照缓存时间 |
 | `ORCH_CROSS_REVIEW` | `1` | 评审子任务是否自动换用另一个执行器 |
 | `ORCH_RUN_TIMEOUT_SECONDS` | `3600` | 单次执行超时，最低 60 秒 |
 
@@ -167,7 +198,7 @@ ORCH_PORT=8877 python3 run.py serve
 ORCH_EXECUTORS="codex,claude-code" python3 run.py serve
 ```
 
-选择顺序是**任务指定 → 项目默认 → 部署默认**。新建任务时可以在"执行器"下拉里选，也可以通过 MCP 的 `executor` 参数指定。
+选择顺序是**现有会话固定 → 任务指定 → 项目默认 → 额度智能比较**。部署默认只在额度接近或不可观测时作为偏好。新建任务保持“智能分配（推荐）”即可，也可以通过 MCP 的 `executor` 参数固定执行器。
 
 | | Codex CLI | Claude Code CLI |
 | --- | --- | --- |

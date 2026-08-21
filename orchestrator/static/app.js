@@ -58,6 +58,20 @@ function toast(message, error = false) {
   toastTimer = setTimeout(() => { node.className = "toast"; }, 3200);
 }
 
+function quotaSummary(item) {
+  const quota = item.quota || {};
+  if (!quota.observed) return `${item.label}：额度待观测`;
+  const remaining = Math.round(Number(quota.remaining_percent || 0));
+  let reset = "";
+  if (quota.reset_at) {
+    const seconds = Math.max(0, Number(quota.reset_at) - Date.now() / 1000);
+    reset = seconds < 3600
+      ? `，${Math.max(1, Math.round(seconds / 60))} 分钟后刷新`
+      : `，${(seconds / 3600).toFixed(1)} 小时后刷新`;
+  }
+  return `${item.label}：剩余 ${remaining}%${reset}`;
+}
+
 async function loadHealth() {
   try {
     const health = await api("/api/health");
@@ -68,10 +82,10 @@ async function loadHealth() {
     const ready = state.executors.filter((item) => item.ready);
     node.className = `health-card ${agent.ready ? "ok" : "error"}`;
     node.querySelector("strong").textContent = agent.ready
-      ? `执行器就绪：${ready.map((item) => item.label).join("、") || agent.auth_status}`
+      ? (agent.quota_aware ? "智能额度调度已开启" : "执行器已就绪")
       : "没有可用的执行器";
     node.querySelector("small").textContent = agent.ready
-      ? `默认 ${agent.default} · ${agent.workers} 个工位${agent.problems.length ? " · " + agent.problems[0] : ""}`
+      ? (ready.map(quotaSummary).join(" · ") || `默认 ${agent.default}`)
       : (agent.problems[0] || "请运行 doctor");
   } catch (error) {
     $("#agent-health").className = "health-card error";
@@ -166,7 +180,10 @@ function taskCard(task) {
     task.worktree_path ? '<span class="tiny-flag" title="已有独立 worktree">⑂</span>' : "",
   ].join("");
   const body = task.summary || task.description || "尚无说明";
-  const executor = task.executor ? `<span class="task-executor">${escapeHtml(executorLabels[task.executor] || task.executor)}</span>` : "";
+  const assignedExecutor = task.assigned_executor || task.executor;
+  const executor = assignedExecutor
+    ? `<span class="task-executor">${escapeHtml(executorLabels[assignedExecutor] || assignedExecutor)}${task.assigned_model ? ` · ${escapeHtml(task.assigned_model)}` : ""}</span>`
+    : '<span class="task-executor">智能分配</span>';
   return `
     <article class="task-card" data-task-id="${task.id}">
       <div class="task-card-top"><span class="role-pill">${escapeHtml(roles[task.role] || task.role)}</span><span class="task-id">${escapeHtml(task.id.slice(-6))}</span></div>
@@ -222,6 +239,7 @@ function renderTaskDetail(task) {
     <div class="meta-strip">
       <div class="meta-box"><span>状态</span><strong>${escapeHtml(statusLabel)}</strong></div>
       <div class="meta-box"><span>分支</span><strong>${escapeHtml(task.branch_name || "执行时创建")}</strong></div>
+      <div class="meta-box"><span>Agent / 模型</span><strong>${escapeHtml(task.assigned_executor ? `${executorLabels[task.assigned_executor] || task.assigned_executor} · ${task.assigned_model || "自动"}` : "等待智能分配")}</strong></div>
       <div class="meta-box"><span>会话</span><strong>${escapeHtml(task.session_id ? task.session_id.slice(0, 8) : "尚未建立")}</strong></div>
     </div>
     ${error}${approval}
@@ -240,7 +258,7 @@ function renderTaskDetail(task) {
 }
 
 function taskActions(task) {
-  if (["backlog", "ready"].includes(task.status)) return '<button class="button primary small" data-action="start">启动 Codex</button>';
+  if (["backlog", "ready"].includes(task.status)) return '<button class="button primary small" data-action="start">智能启动</button>';
   if (["failed", "blocked"].includes(task.status)) return '<button class="button primary small" data-action="retry">重试任务</button>';
   if (task.status === "waiting_approval") return `
     <button class="button primary small" data-action="approve">批准</button>
@@ -248,7 +266,7 @@ function taskActions(task) {
   if (task.status === "review") return `
     <button class="button primary small" data-action="accept-review">评审通过</button>
     <button class="button danger small" data-action="request-changes">要求修改</button>`;
-  if (task.status === "running") return '<button class="button secondary small" disabled>Codex 正在工作</button>';
+  if (task.status === "running") return '<button class="button secondary small" disabled>Agent 正在工作</button>';
   return "";
 }
 
@@ -343,7 +361,7 @@ function openProjectDialog() { $("#project-dialog").showModal(); }
 function openTaskDialog() {
   if (!state.currentProject) return;
   const executor = $("#task-form [name=executor]");
-  executor.innerHTML = `<option value="">项目默认</option>${state.executors
+  executor.innerHTML = `<option value="">智能分配（推荐）</option>${state.executors
     .map((item) => `<option value="${item.name}"${item.ready ? "" : " disabled"}>${escapeHtml(item.label)}${item.ready ? "" : " · 不可用"}</option>`)
     .join("")}`;
   const parent = $("#task-form [name=parent_id]");

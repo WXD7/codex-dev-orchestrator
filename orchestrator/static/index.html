@@ -52,7 +52,7 @@
         <div class="onboarding-orbit"><span>C</span></div>
         <p class="eyebrow">FIRST WORKSPACE</p>
         <h2>把一个本地 Git 仓库接入编排台</h2>
-        <p>项目代码不会上传。每个 Agent 任务会在独立 worktree 中运行，Codex 使用你当前的 ChatGPT 订阅登录。</p>
+        <p>项目代码不会上传。每个 Agent 任务会在独立 worktree 中运行，并根据本机订阅额度智能选择执行器和模型。</p>
         <button class="button primary" id="onboarding-project">添加第一个项目</button>
       </section>
 
@@ -126,7 +126,7 @@
           </select>
         </label>
         <label>执行器
-          <select name="executor"><option value="">项目默认</option></select>
+          <select name="executor"><option value="">智能分配（推荐）</option></select>
         </label>
         <label>优先级<input name="priority" type="number" min="0" max="100" value="50"></label>
         <label>父任务<select name="parent_id"><option value="">无</option></select></label>

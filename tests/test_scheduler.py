@@ -11,7 +11,8 @@ from orchestrator.agents import AgentRegistry
 from orchestrator.database import Database
 from orchestrator.git_service import GitService
 from orchestrator.models import AgentRunResult, PreflightResult
-from orchestrator.scheduler import TaskScheduler
+from orchestrator.quota import QuotaSnapshot, QuotaWindow
+from orchestrator.scheduler import QuotaDeferred, TaskScheduler
 from tests.helpers import make_git_repo
 
 
@@ -70,6 +71,29 @@ class UnavailableAgent(FakeAgent):
         return PreflightResult(False, "", "", ["Offline CLI not found"])
 
 
+class ExhaustedAgent(FakeAgent):
+    name = "exhausted"
+    label = "Exhausted executor"
+
+    def quota_snapshot(self, force=False):
+        return QuotaSnapshot(
+            executor=self.name,
+            windows=(
+                QuotaWindow(
+                    "weekly",
+                    100,
+                    resets_at=int(time.time()) + 3600,
+                    reached=True,
+                ),
+            ),
+            source="test",
+            confidence="high",
+        )
+
+    def model_for(self, tier):
+        return "fake-%s" % tier
+
+
 class SchedulerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -124,6 +148,27 @@ class SchedulerTests(unittest.TestCase):
 
         self.assertEqual(self.db.get_task(task["id"])["status"], "blocked")
         self.assertEqual(self.db.list_runs(task["id"]), [])
+
+    def test_exhausted_auto_task_waits_for_refresh_instead_of_failing(self):
+        self.scheduler.stop()
+        agents = AgentRegistry([ExhaustedAgent()], "exhausted")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        scheduler.start()
+        try:
+            task = self.db.create_task(
+                self.project["id"], "Wait for quota", auto_start=True
+            )
+            self.db.update_task(task["id"], status="ready")
+            time.sleep(1.8)
+            waiting = self.db.get_task(task["id"])
+            self.assertEqual(waiting["status"], "ready")
+            self.assertEqual(self.db.list_runs(task["id"]), [])
+            events = self.db.list_events(task["id"])
+            self.assertIn("task.quota_deferred", [event["type"] for event in events])
+            with self.assertRaises(QuotaDeferred):
+                scheduler.submit(task["id"])
+        finally:
+            scheduler.stop()
 
     def test_empty_agent_block_summary_still_gets_a_stable_reason(self):
         task = self.db.create_task(self.project["id"], "Ambiguous blocker")
@@ -308,6 +353,10 @@ class SchedulerTests(unittest.TestCase):
         # FakeAgent reports tests=[]; the gate must show an explicit empty list
         # rather than silently omitting the field.
         self.assertEqual(json.loads(self.db.get_task(task["id"])["evidence"]), [])
+        assigned = self.db.get_task(task["id"])
+        self.assertEqual(assigned["assigned_executor"], "fake")
+        event_types = [item["type"] for item in self.db.list_events(task["id"])]
+        self.assertIn("task.scheduled", event_types)
 
     def test_reviewer_children_are_assigned_a_different_executor(self):
         second = FakeAgent()

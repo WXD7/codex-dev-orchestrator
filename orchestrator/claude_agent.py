@@ -33,6 +33,7 @@ from .agent_base import (
     redacted_command,
 )
 from .models import AgentRunResult, PreflightResult, READ_ONLY_ROLES
+from .quota import QuotaCache, QuotaSnapshot, merge_claude_rate_limit
 
 # Analysis roles get exactly the tools needed to read a repository.
 READ_ONLY_TOOLS = ("Read", "Grep", "Glob")
@@ -89,6 +90,7 @@ class ClaudeStdoutParser(StdoutParser):
         self.assistant_text: List[str] = []
         self.plain_text: List[str] = []
         self.permission_denials: List[Any] = []
+        self.rate_limit_updates: List[Dict[str, Any]] = []
         self.is_error = False
 
     def handle(self, line: str, emit: EventCallback) -> None:
@@ -109,6 +111,10 @@ class ClaudeStdoutParser(StdoutParser):
             self._handle_result(event, emit)
         elif event_type == "assistant":
             self.assistant_text.append(_message_text(event.get("message")))
+        elif event_type in ("rate_limit_event", "rate_limit"):
+            info = event.get("rate_limit_info") or event.get("rateLimitInfo")
+            if isinstance(info, dict):
+                self.rate_limit_updates.append(info)
         emit("claude.%s" % event_type, event)
 
     def _handle_result(self, event: Dict[str, Any], emit: EventCallback) -> None:
@@ -166,15 +172,23 @@ class ClaudeCodeAgent(AgentExecutor):
         schema_path: Path,
         runs_dir: Path,
         model: str = "",
+        models: Optional[Dict[str, str]] = None,
         timeout_seconds: int = 3600,
     ):
         self.binary = binary
         self.schema_path = Path(schema_path).resolve()
         self.runs_dir = Path(runs_dir).resolve()
         self.model = model
+        self.models = dict(
+            models
+            or {"high": "opus", "balanced": "sonnet", "economy": "haiku"}
+        )
         self.timeout_seconds = timeout_seconds
         self.supervisor = ProcessSupervisor(timeout_seconds)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+        self.quota_cache = QuotaCache(
+            self.runs_dir.parent / "quota" / "claude-code.json"
+        )
         self._schema_argument = ""
 
     # -- readiness --------------------------------------------------------
@@ -229,6 +243,15 @@ class ClaudeCodeAgent(AgentExecutor):
             status += " (%s)" % subscription
         return status, ""
 
+    def quota_snapshot(self, force: bool = False) -> QuotaSnapshot:
+        # Claude exposes rate-limit state as stream events, not a documented
+        # zero-token polling endpoint. The last credential-free event snapshot
+        # is therefore the honest pre-run signal.
+        return self.quota_cache.read(self.name)
+
+    def model_for(self, tier: str) -> str:
+        return self.model or self.models.get(tier, self.models.get("balanced", ""))
+
     # -- command ----------------------------------------------------------
 
     def schema_argument(self) -> str:
@@ -250,6 +273,7 @@ class ClaudeCodeAgent(AgentExecutor):
         worktree: Path,
         prompt: str,
         session_id: Optional[str] = None,
+        model: str = "",
     ) -> List[str]:
         tools = READ_ONLY_TOOLS if role in READ_ONLY_ROLES else WRITE_TOOLS
         command = [
@@ -270,8 +294,9 @@ class ClaudeCodeAgent(AgentExecutor):
         ]
         if role not in READ_ONLY_ROLES:
             command.extend(["--permission-mode", "acceptEdits"])
-        if self.model:
-            command.extend(["--model", self.model])
+        selected_model = model or self.model
+        if selected_model:
+            command.extend(["--model", selected_model])
         if session_id:
             command.extend(["--resume", session_id])
         # `--allowedTools` and friends are variadic, so the prompt needs an
@@ -290,10 +315,13 @@ class ClaudeCodeAgent(AgentExecutor):
         prompt: str,
         session_id: Optional[str],
         on_event: EventCallback,
+        model: str = "",
     ) -> AgentRunResult:
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        command = self.build_command(role, Path(worktree), prompt, session_id)
+        command = self.build_command(
+            role, Path(worktree), prompt, session_id, model=model
+        )
         parser = ClaudeStdoutParser(session_id)
         outcome = self.supervisor.run(
             command,
@@ -303,6 +331,12 @@ class ClaudeCodeAgent(AgentExecutor):
             stderr_event="claude.stderr",
             stdout_event="claude.stdout",
         )
+
+        if parser.rate_limit_updates:
+            snapshot = self.quota_cache.read(self.name)
+            for info in parser.rate_limit_updates:
+                snapshot = merge_claude_rate_limit(snapshot, info)
+            self.quota_cache.write(snapshot)
 
         return_code = outcome.return_code
         stderr_lines = list(outcome.stderr_lines)

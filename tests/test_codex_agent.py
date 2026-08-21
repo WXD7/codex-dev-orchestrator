@@ -112,6 +112,25 @@ class CodexAgentTests(unittest.TestCase):
         self.assertIn("read-only", planner)
         self.assertIn("workspace-write", reviewer)
 
+    def test_model_override_is_passed_to_new_and_resumed_runs(self):
+        fresh = self.agent.build_command(
+            "implementer",
+            self.root,
+            "build",
+            self.root / "fresh.json",
+            model="gpt-5.6-luna",
+        )
+        resumed = self.agent.build_command(
+            "implementer",
+            self.root,
+            "continue",
+            self.root / "resume.json",
+            session_id="session-1",
+            model="gpt-5.6-terra",
+        )
+        self.assertEqual(fresh[fresh.index("--model") + 1], "gpt-5.6-luna")
+        self.assertEqual(resumed[resumed.index("--model") + 1], "gpt-5.6-terra")
+
 
 if __name__ == "__main__":
     unittest.main()

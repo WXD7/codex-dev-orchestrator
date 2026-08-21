@@ -11,6 +11,13 @@ from .database import Database, utc_now
 from .git_service import GitError, GitService
 from .models import PreflightResult, TaskRole, TaskStatus
 from .prompts import build_prompt
+from .quota import SchedulingDecision
+
+
+class QuotaDeferred(RuntimeError):
+    def __init__(self, decision: SchedulingDecision):
+        super().__init__("%s 额度暂不可用；%s" % (decision.executor, decision.reason))
+        self.decision = decision
 
 
 class TaskScheduler:
@@ -30,6 +37,9 @@ class TaskScheduler:
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self._shutdown = threading.Event()
         self._threads: List[threading.Thread] = []
+        self._decisions: Dict[str, SchedulingDecision] = {}
+        self._decision_lock = threading.Lock()
+        self._quota_deferred_until: Dict[str, float] = {}
         self._preflight = PreflightResult(False, "", "", ["Scheduler not started"])
 
     def start(self) -> None:
@@ -77,18 +87,33 @@ class TaskScheduler:
         if not task:
             raise RuntimeError("Task not found")
         project = self.db.get_project(task["project_id"])
-        return self.agent.resolve_name(task, project)
+        return self.agent.select(task, project).executor
 
     def submit(self, task_id: str) -> bool:
         if not self._preflight.ok:
             raise RuntimeError("; ".join(self._preflight.problems))
-        executor = self.executor_for(task_id)
-        check = self.agent.check(executor)
+        task = self.db.get_task(task_id)
+        if not task:
+            raise RuntimeError("Task not found")
+        project = self.db.get_project(task["project_id"])
+        decision = self.agent.select(task, project)
+        if decision.blocked:
+            raise QuotaDeferred(decision)
+        check = self.agent.check(decision.executor)
         if not check.ok:
             raise RuntimeError(
-                "Executor %s is unavailable: %s" % (executor, "; ".join(check.problems))
+                "Executor %s is unavailable: %s"
+                % (decision.executor, "; ".join(check.problems))
             )
         if self.db.queue_task(task_id):
+            self.db.update_task(
+                task_id,
+                assigned_executor=decision.executor,
+                assigned_model=decision.model,
+            )
+            with self._decision_lock:
+                self._decisions[task_id] = decision
+            self.db.add_event(task_id, None, "task.scheduled", decision.to_dict())
             self.db.add_event(task_id, None, "task.queued", {})
             self._queue.put(task_id)
             return True
@@ -101,8 +126,21 @@ class TaskScheduler:
                 if not self._preflight.ok:
                     continue
                 for task_id in self.db.list_auto_startable():
+                    if self._quota_deferred_until.get(task_id, 0) > time.time():
+                        continue
                     try:
                         self.submit(task_id)
+                    except QuotaDeferred as exc:
+                        reset_at = exc.decision.defer_until or int(time.time()) + 300
+                        self._quota_deferred_until[task_id] = min(
+                            float(reset_at + 5), time.time() + 300
+                        )
+                        self.db.add_event(
+                            task_id,
+                            None,
+                            "task.quota_deferred",
+                            exc.decision.to_dict(),
+                        )
                     except RuntimeError as exc:
                         # One task whose executor is missing must not silently
                         # stop auto-scheduling for every other task.
@@ -152,13 +190,24 @@ class TaskScheduler:
             prompt = build_prompt(task, project, messages, parent)
             self.db.mark_messages_delivered(task_id)
 
-            executor = self.agent.resolve_name(task, project)
+            with self._decision_lock:
+                decision = self._decisions.pop(task_id, None)
+            if decision is None:
+                decision = self.agent.select(task, project)
+            executor = decision.executor
             run = self.db.create_run(task_id)
             self.db.add_event(
                 task_id,
                 run["id"],
                 "run.started",
-                {"role": task["role"], "executor": executor},
+                {
+                    "role": task["role"],
+                    "executor": executor,
+                    "model": decision.model,
+                    "model_tier": decision.model_tier,
+                    "quota_mode": decision.mode,
+                    "quota_reason": decision.reason,
+                },
             )
 
             def on_event(event_type: str, payload: Dict[str, Any]) -> None:
@@ -172,6 +221,7 @@ class TaskScheduler:
                 session_id=task.get("session_id"),
                 on_event=on_event,
                 executor=executor,
+                model=decision.model,
             )
             self.db.set_run_command(run["id"], result.command)
             self.db.finish_run(

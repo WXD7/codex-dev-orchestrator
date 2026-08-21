@@ -15,6 +15,7 @@ from .agent_base import (
     redacted_command,
 )
 from .models import AgentRunResult, PreflightResult, READ_ONLY_ROLES
+from .quota import CodexQuotaProbe, QuotaSnapshot
 
 
 class CodexStdoutParser(StdoutParser):
@@ -47,14 +48,27 @@ class CodexAgent(AgentExecutor):
         schema_path: Path,
         runs_dir: Path,
         model: str = "",
+        models: Optional[Dict[str, str]] = None,
+        quota_cache_seconds: int = 60,
         timeout_seconds: int = 3600,
     ):
         self.binary = binary
         self.schema_path = Path(schema_path).resolve()
         self.runs_dir = Path(runs_dir).resolve()
         self.model = model
+        self.models = dict(
+            models
+            or {
+                "high": "gpt-5.6-sol",
+                "balanced": "gpt-5.6-terra",
+                "economy": "gpt-5.6-luna",
+            }
+        )
         self.timeout_seconds = timeout_seconds
         self.supervisor = ProcessSupervisor(timeout_seconds)
+        self.quota_probe = CodexQuotaProbe(
+            binary, ttl_seconds=quota_cache_seconds
+        )
         self.runs_dir.mkdir(parents=True, exist_ok=True)
 
     def preflight(self) -> PreflightResult:
@@ -101,6 +115,14 @@ class CodexAgent(AgentExecutor):
     def _quick(args: List[str]):
         return quick(args)
 
+    def quota_snapshot(self, force: bool = False) -> QuotaSnapshot:
+        return self.quota_probe.read(force=force)
+
+    def model_for(self, tier: str) -> str:
+        # ORCH_CODEX_MODEL remains a hard pin for operators who do not want
+        # automatic model switching.
+        return self.model or self.models.get(tier, self.models.get("balanced", ""))
+
     def build_command(
         self,
         role: str,
@@ -108,7 +130,9 @@ class CodexAgent(AgentExecutor):
         prompt: str,
         output_path: Path,
         session_id: Optional[str] = None,
+        model: str = "",
     ) -> List[str]:
+        selected_model = model or self.model
         if session_id:
             command = [
                 self.binary,
@@ -120,8 +144,8 @@ class CodexAgent(AgentExecutor):
                 "-o",
                 str(output_path),
             ]
-            if self.model:
-                command.extend(["--model", self.model])
+            if selected_model:
+                command.extend(["--model", selected_model])
             command.extend([session_id, prompt])
             return command
 
@@ -141,8 +165,8 @@ class CodexAgent(AgentExecutor):
             "-o",
             str(output_path),
         ]
-        if self.model:
-            command.extend(["--model", self.model])
+        if selected_model:
+            command.extend(["--model", selected_model])
         command.append(prompt)
         return command
 
@@ -162,11 +186,14 @@ class CodexAgent(AgentExecutor):
         prompt: str,
         session_id: Optional[str],
         on_event: EventCallback,
+        model: str = "",
     ) -> AgentRunResult:
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         output_path = run_dir / "final.json"
-        command = self.build_command(role, worktree, prompt, output_path, session_id)
+        command = self.build_command(
+            role, worktree, prompt, output_path, session_id, model=model
+        )
         parser = CodexStdoutParser(session_id)
         outcome = self.supervisor.run(
             command,

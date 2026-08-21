@@ -29,6 +29,7 @@ flowchart LR
 | SQLite 数据库 | 保存项目、任务图、运行、事件、消息、会话、审批和交接信息 |
 | 调度器 | 并发工位、领取任务、依赖解锁、自动调度、启动恢复和结果状态机 |
 | 执行器注册表 | 按任务解析执行器、分别做可用性预检、把一个执行器的故障隔离在它自己的任务上 |
+| 额度观察与策略 | 将 Codex App Server 和 Claude rate-limit event 归一成额度快照，按余量、刷新时间、角色和优先级选择执行器与模型 |
 | 执行公共内核 | 进程监管、硬超时、事件抽取、环境变量剥离、提示词脱敏、结构化结果提取与校验 |
 | Codex 执行适配器 | ChatGPT 登录预检、构造 `codex exec`、JSONL 事件、原生 `--output-schema` 输出、会话恢复 |
 | Claude Code 执行适配器 | 构造 `claude -p`、按角色收紧工具白名单、stream-json 事件、在本地强制结果契约 |
@@ -161,6 +162,29 @@ flowchart TB
 `preflight()` 必须真的检查登录，而不只是检查文件存在：`codex login status` 要求 ChatGPT 登录，`claude auth status` 返回 JSON 并校验 `loggedIn`。订阅访问由剥离 API Key 环境变量强制，预检只是让问题在任务开跑前就暴露。
 
 一个执行器不可用时，注册表仍然是就绪的，只要还有别的执行器可用。指定了缺失执行器的任务会带着原因单独失败，自动调度不会因此停摆。
+
+## 额度感知调度
+
+额度调度位于任务图和执行器注册表之间，不触碰供应商凭据：
+
+```mermaid
+flowchart LR
+    T[Ready 任务] --> P[额度策略]
+    C[Codex App Server<br/>rateLimits/read] --> Q[统一 QuotaSnapshot]
+    A[Claude rate_limit_event] --> Q
+    Q --> P
+    P --> D[执行器 + 模型档位]
+    D --> R[任务运行]
+    R --> A
+```
+
+统一快照保存 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at`、数据来源和置信度。Codex 的主桶用于通用模型决策，Spark 等独立桶同时保留给控制台展示；Claude 的事件可能逐个报告五小时、七天或特定模型窗口，因此采用合并快照。
+
+策略先尊重不可变约束：恢复中的会话、任务手工指定和项目默认不会被额度比较改写。只有未固定的任务才在可用执行器间评分。评分以最紧窗口的剩余比例为主，临近刷新加分，长窗口且刷新尚远时略作保留。任务角色、优先级与额度档位共同决定 `high / balanced / economy`，最终由执行器映射为供应商模型名。
+
+实时额度缺失不是零额度。此时快照明确标记为 unknown，调度器采用谨慎档并轻微偏好部署默认执行器。额度真正触顶时，手工启动返回清楚的刷新提示，自动任务记录 `task.quota_deferred` 并保持可执行，最多每五分钟重新检查一次。
+
+调度决定作为 `task.scheduled` 事件写入账本，任务同时保存 `assigned_executor` 和 `assigned_model`。这既让人能追溯“为什么选它”，也确保有会话 ID 的重试不会跨执行器恢复。
 
 ## MCP 边界
 

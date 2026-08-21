@@ -65,6 +65,8 @@ class Database:
                     description TEXT NOT NULL DEFAULT '',
                     role TEXT NOT NULL DEFAULT 'implementer',
                     executor TEXT NOT NULL DEFAULT '',
+                    assigned_executor TEXT NOT NULL DEFAULT '',
+                    assigned_model TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'backlog',
                     priority INTEGER NOT NULL DEFAULT 50,
                     branch_name TEXT,
@@ -163,6 +165,8 @@ class Database:
                 )
             for table, column in (
                 ("tasks", "executor"),
+                ("tasks", "assigned_executor"),
+                ("tasks", "assigned_model"),
                 ("tasks", "evidence"),
                 ("projects", "default_executor"),
             ):
@@ -407,6 +411,8 @@ class Database:
         allowed = {
             "status",
             "executor",
+            "assigned_executor",
+            "assigned_model",
             "branch_name",
             "worktree_path",
             "session_id",

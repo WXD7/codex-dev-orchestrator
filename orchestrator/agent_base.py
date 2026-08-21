@@ -294,5 +294,6 @@ class AgentExecutor(ABC):
         prompt: str,
         session_id: Optional[str],
         on_event: EventCallback,
+        model: str = "",
     ) -> AgentRunResult:
         """Execute one task turn inside the given worktree."""

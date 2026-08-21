@@ -56,6 +56,12 @@ print(json.dumps({
     "session_id": "sess-42",
     "message": {"content": [{"type": "text", "text": "working"}]},
 }))
+if os.environ.get("FAKE_RATE_LIMIT"):
+    print(json.dumps({
+        "type": "rate_limit_event",
+        "session_id": "sess-42",
+        "rate_limit_info": json.loads(os.environ["FAKE_RATE_LIMIT"]),
+    }))
 event = {
     "type": "result",
     "subtype": "success",
@@ -201,6 +207,12 @@ class ClaudeAgentTests(unittest.TestCase):
         command = self.agent.build_command("implementer", self.root, "again", "sess-42")
         self.assertEqual(command[command.index("--resume") + 1], "sess-42")
 
+    def test_model_override_is_passed_to_the_cli(self):
+        command = self.agent.build_command(
+            "implementer", self.root, "again", model="haiku"
+        )
+        self.assertEqual(command[command.index("--model") + 1], "haiku")
+
     def test_prompt_carries_a_short_result_contract(self):
         prompt = self.agent.build_command("implementer", self.root, "base prompt")[-1]
         self.assertIn("base prompt", prompt)
@@ -248,6 +260,25 @@ class ClaudeAgentTests(unittest.TestCase):
         self.assertIn("claude.result", events)
         saved = json.loads((self.root / "runs" / "run_1" / "final.json").read_text())
         self.assertEqual(saved["recommended_stage"], "review")
+
+    def test_run_caches_machine_readable_rate_limit_events(self):
+        self.set_env(
+            FAKE_RESULT=json.dumps(GOOD_RESULT),
+            FAKE_RATE_LIMIT=json.dumps(
+                {
+                    "rate_limit_type": "five_hour",
+                    "status": "allowed_warning",
+                    "utilization": 0.8,
+                    "resets_at": 1787330000,
+                }
+            ),
+        )
+        result, events = self.run_agent()
+        self.assertEqual(result.status, "complete")
+        self.assertIn("claude.rate_limit_event", events)
+        quota = self.agent.quota_snapshot()
+        self.assertEqual(quota.remaining_percent, 20)
+        self.assertEqual(quota.source, "claude-rate-limit-event")
 
     def test_run_recovers_a_fenced_result_wrapped_in_prose(self):
         self.set_env(
