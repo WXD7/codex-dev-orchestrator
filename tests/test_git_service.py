@@ -41,6 +41,40 @@ class GitServiceTests(unittest.TestCase):
         with self.assertRaises(GitError):
             self.git.validate_repository(str(self.repo), "--upload-pack=bad")
 
+    def test_human_approval_can_fast_forward_clean_project_branch(self):
+        task = self.git.prepare_worktree(
+            "project", "task_merge", "Approved task", str(self.repo), "main"
+        )
+        task_path = Path(task["worktree_path"])
+        (task_path / "approved.txt").write_text("approved\n", encoding="utf-8")
+        task_head = self.git.commit_changes(
+            str(task_path), "task_merge", "Approved task"
+        )
+
+        result = self.git.fast_forward_project(
+            str(self.repo), "main", task["branch_name"]
+        )
+
+        self.assertEqual(result["after"], task_head)
+        self.assertEqual(
+            (self.repo / "approved.txt").read_text(encoding="utf-8"),
+            "approved\n",
+        )
+
+    def test_fast_forward_refuses_dirty_project_worktree(self):
+        task = self.git.prepare_worktree(
+            "project", "task_dirty", "Approved task", str(self.repo), "main"
+        )
+        task_path = Path(task["worktree_path"])
+        (task_path / "approved.txt").write_text("approved\n", encoding="utf-8")
+        self.git.commit_changes(str(task_path), "task_dirty", "Approved task")
+        (self.repo / "README.md").write_text("operator edit\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(GitError, "uncommitted changes"):
+            self.git.fast_forward_project(str(self.repo), "main", task["branch_name"])
+
+        self.assertFalse((self.repo / "approved.txt").exists())
+
     def test_tracked_modifications_ignores_untracked_files(self):
         status = " M orchestrator/web.py\n?? .pytest_cache/\nA  new_file.py\n?? scratch.log\n"
         self.assertEqual(

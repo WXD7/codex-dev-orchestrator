@@ -323,7 +323,7 @@ async function taskAction(action, taskId) {
 
 function openDecisionDialog(action, taskId) {
   const copy = {
-    approve: ["批准任务结果", "批准后该任务完成，并释放满足依赖条件的下游任务。", "确认批准"],
+    approve: ["批准任务结果", "批准后将写任务分支安全快进合入项目基准分支，随后任务完成并释放满足依赖条件的下游任务。", "确认批准"],
     reject: ["拒绝并退回修改", "请写明拒绝原因和期望的修改方向，Agent 将在同一会话中继续。", "退回修改"],
     "accept-review": ["通过人工评审", "通过后任务完成，并释放下游评审或 QA 任务。", "评审通过"],
     "request-changes": ["要求继续修改", "请给出具体、可验证的修改要求，Agent 将在同一 worktree 和会话中继续。", "退回修改"],

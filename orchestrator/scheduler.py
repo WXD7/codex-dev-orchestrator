@@ -724,6 +724,22 @@ class TaskScheduler:
         task = self.db.get_task(task_id)
         if not task or task["status"] != TaskStatus.WAITING_APPROVAL.value:
             raise ValueError("Task is not waiting for approval")
+
+        pending = self.db.pending_approval(task_id)
+        if not pending:
+            raise ValueError("No pending approval")
+        if approved and pending["kind"] == "complete" and task["role"] in WRITE_ROLES:
+            project = self.db.get_project(task["project_id"])
+            if not project:
+                raise ValueError("Project not found")
+            branch = str(task.get("branch_name") or "").strip()
+            if not branch:
+                raise GitError("Approved write task has no isolated branch")
+            merged = self.git.fast_forward_project(
+                project["repo_path"], project["base_branch"], branch
+            )
+            self.db.add_event(task_id, None, "git.fast_forwarded", merged)
+
         approval = self.db.resolve_approval(task_id, approved, note)
         decision = "批准" if approved else "拒绝"
         message = "人工审批结果：%s。%s" % (decision, note.strip() or "未提供补充说明。")

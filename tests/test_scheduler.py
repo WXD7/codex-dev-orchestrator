@@ -9,7 +9,7 @@ from pathlib import Path
 
 from orchestrator.agents import AgentRegistry
 from orchestrator.database import Database
-from orchestrator.git_service import GitService
+from orchestrator.git_service import GitError, GitService
 from orchestrator.models import AgentRunResult, PreflightResult
 from orchestrator.quota import QuotaSnapshot, QuotaWindow
 from orchestrator.scheduler import QuotaDeferred, TaskScheduler
@@ -173,6 +173,7 @@ class SchedulerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         repo = make_git_repo(root)
+        self.repo = repo
         self.db = Database(root / "db.sqlite3")
         self.db.initialize()
         self.project = self.db.create_project("Demo", str(repo), "main")
@@ -211,6 +212,84 @@ class SchedulerTests(unittest.TestCase):
         self.scheduler.resolve_approval(parent["id"], True, "Approved")
         self.assertEqual(self.db.get_task(parent["id"])["status"], "done")
         self.assertEqual(self.db.get_task(child["id"])["status"], "ready")
+
+    def test_complete_write_approval_fast_forwards_main_before_marking_done(self):
+        task = self.db.create_task(
+            self.project["id"],
+            "Ship approved feature",
+            role="implementer",
+            requires_approval=True,
+        )
+        worktree = self.git.prepare_worktree(
+            self.project["id"],
+            task["id"],
+            task["title"],
+            str(self.repo),
+            "main",
+        )
+        path = Path(worktree["worktree_path"])
+        (path / "feature.txt").write_text("approved feature\n", encoding="utf-8")
+        task_head = self.git.commit_changes(str(path), task["id"], task["title"])
+        self.db.update_task(
+            task["id"],
+            status="waiting_approval",
+            branch_name=worktree["branch_name"],
+            worktree_path=worktree["worktree_path"],
+        )
+        self.db.create_approval(task["id"], "Approve merge?", kind="complete")
+
+        self.scheduler.resolve_approval(task["id"], True, "Approved")
+
+        self.assertEqual(self.db.get_task(task["id"])["status"], "done")
+        self.assertEqual(
+            subprocess.run(
+                ["git", "rev-parse", "main"],
+                cwd=str(self.repo),
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
+            task_head,
+        )
+        self.assertEqual(
+            (self.repo / "feature.txt").read_text(encoding="utf-8"),
+            "approved feature\n",
+        )
+        events = self.db.list_events(task["id"])
+        self.assertIn("git.fast_forwarded", [event["type"] for event in events])
+
+    def test_failed_fast_forward_keeps_human_approval_pending(self):
+        task = self.db.create_task(
+            self.project["id"],
+            "Protect operator changes",
+            role="implementer",
+            requires_approval=True,
+        )
+        worktree = self.git.prepare_worktree(
+            self.project["id"],
+            task["id"],
+            task["title"],
+            str(self.repo),
+            "main",
+        )
+        path = Path(worktree["worktree_path"])
+        (path / "feature.txt").write_text("approved feature\n", encoding="utf-8")
+        self.git.commit_changes(str(path), task["id"], task["title"])
+        self.db.update_task(
+            task["id"],
+            status="waiting_approval",
+            branch_name=worktree["branch_name"],
+            worktree_path=worktree["worktree_path"],
+        )
+        self.db.create_approval(task["id"], "Approve merge?", kind="complete")
+        (self.repo / "README.md").write_text("operator edit\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(GitError, "uncommitted changes"):
+            self.scheduler.resolve_approval(task["id"], True, "Approved")
+
+        self.assertEqual(self.db.get_task(task["id"])["status"], "waiting_approval")
+        self.assertEqual(self.db.pending_approval(task["id"])["status"], "pending")
+        self.assertFalse((self.repo / "feature.txt").exists())
 
     def test_approval_resume_reuses_children_and_resolves_new_dependencies(self):
         self.scheduler.stop()

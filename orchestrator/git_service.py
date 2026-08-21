@@ -233,6 +233,67 @@ class GitService:
             merged.append(branch)
         return merged
 
+    def fast_forward_project(
+        self, repo_path: str, base_ref: str, task_branch: str
+    ) -> Dict[str, str]:
+        """Advance the checked-out project branch after a human approval.
+
+        Agent runs never call this method.  It is deliberately limited to a
+        clean, already checked-out local base branch and refuses merge commits,
+        detached refs, conflicts, or any attempt to overwrite operator edits.
+        """
+
+        self._validate_ref(base_ref)
+        self._validate_ref(task_branch)
+        repo = Path(self.validate_repository(repo_path, base_ref)["repo_path"])
+
+        status = self._run(["git", "status", "--porcelain"], cwd=repo).stdout.strip()
+        if status:
+            raise GitError(
+                "Project worktree has uncommitted changes; approval cannot update %s"
+                % base_ref
+            )
+
+        base_symbolic = self._run(
+            ["git", "rev-parse", "--symbolic-full-name", base_ref], cwd=repo
+        ).stdout.strip()
+        head_symbolic = self._run(
+            ["git", "rev-parse", "--symbolic-full-name", "HEAD"], cwd=repo
+        ).stdout.strip()
+        if not base_symbolic.startswith("refs/heads/") or head_symbolic != base_symbolic:
+            raise GitError(
+                "Project base branch %s must be checked out before approval" % base_ref
+            )
+
+        before = self._run(["git", "rev-parse", base_ref], cwd=repo).stdout.strip()
+        task_head = self._run(
+            ["git", "rev-parse", "--verify", task_branch], cwd=repo
+        ).stdout.strip()
+        ancestor = self._run(
+            ["git", "merge-base", "--is-ancestor", base_ref, task_branch],
+            cwd=repo,
+            check=False,
+        )
+        if ancestor.returncode != 0:
+            raise GitError(
+                "Task branch %s cannot be fast-forwarded onto %s"
+                % (task_branch, base_ref)
+            )
+
+        if before != task_head:
+            self._run(
+                ["git", "merge", "--ff-only", task_branch],
+                cwd=repo,
+                timeout=300,
+            )
+        after = self._run(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
+        return {
+            "base_ref": base_ref,
+            "branch": task_branch,
+            "before": before,
+            "after": after,
+        }
+
     def commit_changes(self, worktree_path: str, task_id: str, title: str) -> Optional[str]:
         path = Path(worktree_path).resolve()
         self._assert_managed_path(path)
