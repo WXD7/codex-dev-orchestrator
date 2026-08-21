@@ -130,6 +130,10 @@ class CodexAgentTests(unittest.TestCase):
         )
         self.assertEqual(fresh[fresh.index("--model") + 1], "gpt-5.6-luna")
         self.assertEqual(resumed[resumed.index("--model") + 1], "gpt-5.6-terra")
+        self.assertEqual(resumed[resumed.index("--sandbox") + 1], "workspace-write")
+        self.assertEqual(resumed[resumed.index("--cd") + 1], str(self.root))
+        self.assertLess(resumed.index("--sandbox"), resumed.index("resume"))
+        self.assertLess(resumed.index("--cd"), resumed.index("resume"))
 
 
 if __name__ == "__main__":

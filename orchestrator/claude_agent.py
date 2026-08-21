@@ -11,8 +11,9 @@ this executor originally had to reimplement:
 - `claude auth status` reports login state as JSON, so preflight can tell a
   subscription login from an API-key setup before any task runs.
 
-Role isolation still has no `--sandbox` equivalent, so it is expressed as an
-explicit tool allowlist: analysis roles simply never receive the editing tools.
+Role isolation combines an explicit tool allowlist with Claude Code's native
+Bash sandbox. Analysis roles never receive editing tools; write roles can run
+local checks, but sandbox startup and network isolation are hard requirements.
 """
 
 from __future__ import annotations
@@ -72,6 +73,31 @@ FORBIDDEN_FLAGS = (
 # An agent task must not inherit the operator's MCP servers: they are an
 # uncontrolled tool surface, including network egress the allowlist cannot see.
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
+
+# Command-line settings outrank project and user settings. Denied domains merge
+# across scopes and take precedence over allows, so repository content cannot
+# re-enable access to the loopback control plane through Bash subprocesses.
+CLAUDE_SANDBOX_SETTINGS = json.dumps(
+    {
+        "sandbox": {
+            "enabled": True,
+            "failIfUnavailable": True,
+            "allowUnsandboxedCommands": False,
+            "autoAllowBashIfSandboxed": True,
+            "network": {
+                "allowLocalBinding": False,
+                "deniedDomains": [
+                    "localhost",
+                    "*.localhost",
+                    "127.0.0.1",
+                    "0.0.0.0",
+                    "::1",
+                ],
+            },
+        }
+    },
+    separators=(",", ":"),
+)
 
 RESULT_CONTRACT = (
     "\n\nSTRUCTURED RESULT\n"
@@ -231,9 +257,7 @@ class ClaudeCodeAgent(AgentExecutor):
         except ValueError:
             payload = None
         if not isinstance(payload, dict):
-            if result.returncode != 0:
-                return "", "Could not read Claude Code authentication status"
-            return raw.splitlines()[0] if raw else "", ""
+            return "", "Could not verify Claude Code subscription authentication"
         if not payload.get("loggedIn"):
             return "", "Claude Code is not signed in; run `%s auth login`" % self.binary
         method = str(payload.get("authMethod", "") or "unknown")
@@ -241,6 +265,11 @@ class ClaudeCodeAgent(AgentExecutor):
         status = "Logged in via %s" % method
         if subscription:
             status += " (%s)" % subscription
+        normalized_method = method.lower().replace("_", "").replace("-", "").replace(" ", "")
+        if "apikey" in normalized_method:
+            return status, "Claude Code must use subscription login, not an API key"
+        if not subscription:
+            return status, "Claude Code subscription type could not be verified"
         return status, ""
 
     def quota_snapshot(self, force: bool = False) -> QuotaSnapshot:
@@ -289,6 +318,8 @@ class ClaudeCodeAgent(AgentExecutor):
             "--mcp-config",
             EMPTY_MCP_CONFIG,
             "--strict-mcp-config",
+            "--settings",
+            CLAUDE_SANDBOX_SETTINGS,
             "--json-schema",
             self.schema_argument(),
         ]

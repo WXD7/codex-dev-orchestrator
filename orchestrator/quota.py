@@ -14,7 +14,7 @@ import queue
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -176,14 +176,43 @@ class SchedulingDecision:
         }
 
 
+def active_quota_snapshot(
+    snapshot: QuotaSnapshot, now: Optional[int] = None
+) -> QuotaSnapshot:
+    """Discard event-only windows after their advertised reset time.
+
+    A past reset does not prove that the new window is empty; it means the old
+    measurement is no longer evidence. Returning an unknown snapshot lets one
+    cautious task run and collect the provider's next rate-limit event instead
+    of deadlocking forever on a stale 100% cache entry.
+    """
+    current = int(time.time() if now is None else now)
+    active = tuple(
+        window
+        for window in snapshot.windows
+        if window.resets_at is None or window.resets_at > current
+    )
+    if len(active) == len(snapshot.windows):
+        return snapshot
+    if active:
+        return replace(snapshot, windows=active)
+    return replace(
+        snapshot,
+        windows=(),
+        confidence="unknown",
+        error="额度窗口已经刷新，等待新的额度事件",
+    )
+
+
 def quota_mode(snapshot: QuotaSnapshot, now: Optional[int] = None) -> str:
     """Turn a provider-specific snapshot into a stable policy band."""
+    current = int(time.time() if now is None else now)
+    snapshot = active_quota_snapshot(snapshot, current)
     if not snapshot.observed:
         return "cautious"
     if snapshot.reached:
         return "blocked"
     remaining = snapshot.remaining_percent or 0.0
-    current = int(now or time.time())
     seconds_to_reset = (
         max(0, snapshot.reset_at - current) if snapshot.reset_at else None
     )
@@ -211,6 +240,7 @@ def quota_mode(snapshot: QuotaSnapshot, now: Optional[int] = None) -> str:
 
 def quota_score(snapshot: QuotaSnapshot, preferred: bool = False) -> float:
     """Comparable score used only between ready local executors."""
+    snapshot = active_quota_snapshot(snapshot)
     if not snapshot.observed:
         return 25.0 + (5.0 if preferred else 0.0)
     if snapshot.reached:
@@ -257,6 +287,7 @@ def choose_model_tier(
 
 
 def decision_reason(snapshot: QuotaSnapshot, mode: str) -> str:
+    snapshot = active_quota_snapshot(snapshot)
     if not snapshot.observed:
         return "没有可验证的实时额度，采用谨慎档并保留降级空间"
     remaining = snapshot.remaining_percent or 0.0
@@ -506,7 +537,7 @@ class QuotaCache:
                 return QuotaSnapshot.unknown(
                     executor, "等待该执行器首次返回额度事件"
                 )
-            return snapshot
+            return active_quota_snapshot(snapshot)
 
     def write(self, snapshot: QuotaSnapshot) -> None:
         with self._lock:
@@ -523,6 +554,7 @@ def merge_claude_rate_limit(
     previous: QuotaSnapshot, info: Dict[str, Any]
 ) -> QuotaSnapshot:
     """Merge one Claude RateLimitEvent into the last known snapshot."""
+    previous = active_quota_snapshot(previous)
     name = str(info.get("rate_limit_type") or info.get("rateLimitType") or "unknown")
     utilization = info.get("utilization")
     used = _percent(utilization)

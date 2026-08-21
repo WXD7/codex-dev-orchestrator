@@ -95,6 +95,14 @@ class TaskScheduler:
         task = self.db.get_task(task_id)
         if not task:
             raise RuntimeError("Task not found")
+        if task["status"] not in (
+            TaskStatus.BACKLOG.value,
+            TaskStatus.READY.value,
+        ):
+            raise RuntimeError(
+                "任务当前处于 %s，只有待处理或可执行状态可以启动"
+                % task["status"]
+            )
         project = self.db.get_project(task["project_id"])
         decision = self.agent.select(task, project)
         if decision.blocked:
@@ -347,7 +355,7 @@ class TaskScheduler:
         """
         if task["role"] != TaskRole.REVIEWER.value:
             return
-        changed = self.git.tracked_modifications(snapshot.get("status", ""))
+        changed = self.git.worktree_modifications(snapshot.get("status", ""))
         if not changed:
             return
         # Keep the report readable even though the run is about to fail.
@@ -360,7 +368,7 @@ class TaskScheduler:
             task["id"], run_id, "review.contract_violation", {"files": changed[:50]}
         )
         raise RuntimeError(
-            "评审者修改了已跟踪文件，违反独立评审契约，改动未提交：%s"
+            "评审者修改或新增了文件，违反独立评审契约，改动未提交：%s"
             % "、".join(changed[:10])
         )
 

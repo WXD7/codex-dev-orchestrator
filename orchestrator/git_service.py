@@ -142,6 +142,23 @@ class GitService:
                 changed.append(path)
         return changed
 
+    @staticmethod
+    def worktree_modifications(status: str) -> List[str]:
+        """Every visible worktree path, including newly created files.
+
+        Reviewers may leave ignored test caches behind, but any path visible in
+        porcelain status would be staged by ``git add -A``.  Such a path must
+        therefore stop the reviewer contract before the commit step.
+        """
+        changed: List[str] = []
+        for line in (status or "").splitlines():
+            if not line.strip():
+                continue
+            path = line[3:].strip()
+            if path:
+                changed.append(path)
+        return changed
+
     def snapshot(self, worktree_path: str, max_diff_chars: int = 50000) -> Dict[str, Any]:
         path = Path(worktree_path).resolve()
         self._assert_managed_path(path)

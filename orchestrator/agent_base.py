@@ -52,7 +52,13 @@ def clean_environment() -> Dict[str, str]:
 
 def quick(args: List[str], timeout: int = 20) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+        return subprocess.run(
+            args,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env=clean_environment(),
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return subprocess.CompletedProcess(args, 1, "", str(exc))
 

@@ -13,6 +13,8 @@ from .git_service import GitError, GitService
 from .models import TaskRole, TaskStatus
 from .scheduler import TaskScheduler
 
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
 
 class ApiError(Exception):
     def __init__(self, status: int, message: str):
@@ -57,6 +59,7 @@ class Application:
             if len(parts) == 3:
                 task["messages"] = self.db.list_messages(task_id)
                 task["runs"] = self.db.list_runs(task_id)
+                task["alerts"] = self.db.list_alert_events(task_id)
                 task["approval"] = self.db.pending_approval(task_id)
                 return 200, task
             if parts[3] == "events":
@@ -221,6 +224,9 @@ def make_handler(app: Application):
             print("%s - %s" % (self.address_string(), fmt % args))
 
         def do_GET(self) -> None:
+            if not self._trusted_host():
+                self._json(421, {"error": "Untrusted Host header"})
+                return
             parsed = urlparse(self.path)
             if parsed.path.startswith("/api/"):
                 self._handle_api("GET", parsed.path, parse_qs(parsed.query))
@@ -228,11 +234,41 @@ def make_handler(app: Application):
             self._serve_static(parsed.path)
 
         def do_POST(self) -> None:
+            if not self._trusted_host():
+                self._json(421, {"error": "Untrusted Host header"})
+                return
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                self._json(415, {"error": "POST requests require application/json"})
+                return
+            if not self._trusted_browser_origin():
+                self._json(403, {"error": "Cross-origin control request refused"})
+                return
             parsed = urlparse(self.path)
             if not parsed.path.startswith("/api/"):
                 self._json(404, {"error": "Not found"})
                 return
             self._handle_api("POST", parsed.path, self._read_json())
+
+        def _trusted_host(self) -> bool:
+            host = urlparse("//" + self.headers.get("Host", "")).hostname
+            return bool(host and host.lower() in LOOPBACK_HOSTS)
+
+        def _trusted_browser_origin(self) -> bool:
+            fetch_site = self.headers.get("Sec-Fetch-Site", "").lower()
+            if fetch_site and fetch_site not in ("same-origin", "none"):
+                return False
+            origin = self.headers.get("Origin", "").strip()
+            if not origin:
+                # Native MCP/CLI clients do not send Origin. Agent subprocesses
+                # are kept out by their OS-level network sandbox.
+                return True
+            parsed = urlparse(origin)
+            return (
+                parsed.scheme == "http"
+                and parsed.netloc.lower() == self.headers.get("Host", "").lower()
+                and (parsed.hostname or "").lower() in LOOPBACK_HOSTS
+            )
 
         def _handle_api(self, method: str, path: str, data: Dict[str, Any]) -> None:
             try:
@@ -295,4 +331,3 @@ def make_handler(app: Application):
 
 def create_server(host: str, port: int, app: Application) -> ThreadingHTTPServer:
     return ThreadingHTTPServer((host, port), make_handler(app))
-

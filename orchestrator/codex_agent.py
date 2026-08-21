@@ -133,10 +133,17 @@ class CodexAgent(AgentExecutor):
         model: str = "",
     ) -> List[str]:
         selected_model = model or self.model
+        sandbox = "read-only" if role in READ_ONLY_ROLES else "workspace-write"
         if session_id:
             command = [
                 self.binary,
                 "exec",
+                "--color",
+                "never",
+                "--sandbox",
+                sandbox,
+                "--cd",
+                str(worktree),
                 "resume",
                 "--json",
                 "--output-schema",
@@ -149,7 +156,6 @@ class CodexAgent(AgentExecutor):
             command.extend([session_id, prompt])
             return command
 
-        sandbox = "read-only" if role in READ_ONLY_ROLES else "workspace-write"
         command = [
             self.binary,
             "exec",

@@ -149,6 +149,27 @@ for line in sys.stdin:
         )
         self.assertEqual(quota_mode(quota, now=now), "cautious")
 
+    def test_expired_reached_window_becomes_unknown_instead_of_blocking_forever(self):
+        now = int(time.time())
+        expired = QuotaSnapshot(
+            executor="claude-code",
+            windows=(
+                QuotaWindow(
+                    "five_hour", 100, resets_at=now - 60, reached=True
+                ),
+            ),
+            source="claude-rate-limit-event",
+            confidence="high",
+        )
+        self.assertEqual(quota_mode(expired, now=now), "cautious")
+
+        claude = QuotaExecutor("claude-code", expired)
+        registry = AgentRegistry([claude], "claude-code")
+        registry.preflight()
+        decision = registry.select({"role": "implementer"}, {})
+        self.assertFalse(decision.blocked)
+        self.assertFalse(decision.quota.observed)
+
     def test_role_and_quota_choose_model_tier(self):
         self.assertEqual(choose_model_tier(snapshot("codex", 20), "planner"), "high")
         self.assertEqual(choose_model_tier(snapshot("codex", 90), "planner"), "economy")
@@ -187,6 +208,21 @@ for line in sys.stdin:
         )
         self.assertEqual(decision.executor, "claude-code")
         self.assertEqual(decision.model, "opus-fixed")
+
+    def test_existing_session_never_falls_across_a_missing_executor(self):
+        codex = QuotaExecutor("codex", snapshot("codex", 10))
+        registry = AgentRegistry([codex], "codex")
+        registry.preflight()
+        with self.assertRaisesRegex(RuntimeError, "claude-code.*未启用"):
+            registry.select(
+                {
+                    "role": "implementer",
+                    "session_id": "claude-session",
+                    "assigned_executor": "claude-code",
+                    "assigned_model": "opus-fixed",
+                },
+                {},
+            )
 
     def test_reached_quota_defers_work_until_reset(self):
         codex = QuotaExecutor("codex", snapshot("codex", 100, reached=True))

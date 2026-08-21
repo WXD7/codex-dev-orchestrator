@@ -49,8 +49,11 @@ class GitServiceTests(unittest.TestCase):
         )
         self.assertEqual(GitService.tracked_modifications(""), [])
         self.assertEqual(GitService.tracked_modifications("?? only_untracked\n"), [])
+        self.assertEqual(
+            GitService.worktree_modifications(status),
+            ["orchestrator/web.py", ".pytest_cache/", "new_file.py", "scratch.log"],
+        )
 
 
 if __name__ == "__main__":
     unittest.main()
-

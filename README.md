@@ -17,6 +17,7 @@
 - 每个任务使用独立 Git worktree 和 `agent/...` 本地分支；
 - 下游任务从上游分支继续；有多个依赖时在自己的 worktree 中本地整合；
 - Codex JSONL 事件、结构化结论、token 使用量、会话 ID 和交接说明持久化；
+- 任务详情聚合运行失败、阻塞、额度等待、评审契约违规和 CLI stderr；重复告警自动归并，已知安装噪声不遮挡真正异常；
 - 独立评审自动分配给另一个执行器；评审者修改产品代码会被拒绝提交并判失败；
 - Agent 自报的检查记入账本并在闸门上呈现，空检查列表会显著标出；
 - 人工批准、拒绝、评审通过、要求修改以及同一会话继续执行；
@@ -75,6 +76,8 @@ python3 run.py serve --open
 7. 逐项启动或为项目开启自动调度；
 8. 在任务详情中查看摘要、交接、对话、运行记录和完整 Diff；
 9. 最终代码仍留在 `agent/...` 本地分支，由人决定如何合入。
+
+任务详情会每 3 秒刷新。“运行异常与警告”会把原始事件账本里的失败、阻塞、额度等待、独立评审违规及 stderr 聚合出来；重复行显示次数，完整原始事件仍保存在 SQLite。没有异常时会明确显示绿色状态，而不是留一个容易误解的空白区域。
 
 推荐第一个验证目标：
 
@@ -202,11 +205,11 @@ ORCH_EXECUTORS="codex,claude-code" python3 run.py serve
 
 | | Codex CLI | Claude Code CLI |
 | --- | --- | --- |
-| 只读角色（协调、规划） | `--sandbox read-only` | 工具白名单只有 `Read,Grep,Glob` |
-| 写入角色（实现、评审、QA） | `--sandbox workspace-write` | 白名单加上 `Edit,Write,Bash` 等，并 `--permission-mode acceptEdits` |
+| 只读角色（协调、规划） | `--sandbox read-only` | 工具白名单只有 `Read,Grep,Glob`，并要求原生 Bash sandbox 可用 |
+| 写入角色（实现、评审、QA） | `--sandbox workspace-write` | 白名单加上 `Edit,Write,Bash` 等，Bash 仍在原生 sandbox 内运行 |
 | 工作目录 | `--cd <worktree>` | 进程 cwd 固定为该任务 worktree |
 | 结构化结果 | CLI 原生 `--output-schema` | CLI 原生 `--json-schema`，结果从 `structured_output` 读取 |
-| 网络与发布 | 沙箱默认禁网 | `--disallowedTools` 拒绝 `WebFetch`、`WebSearch`、`git push`、`git merge` 等 |
+| 网络与发布 | 沙箱限制网络 | 原生 sandbox 禁止本机回环访问和本地端口监听；工具策略另拒绝 Web 工具及 Git 发布操作 |
 | 外部工具面 | 沙箱内无 MCP | `--mcp-config '{"mcpServers":{}}' --strict-mcp-config` 切断继承来的 MCP 服务 |
 | 会话恢复 | `exec resume <session>` | `--resume <session>` |
 | 登录检查 | `codex login status` 必须是 ChatGPT 登录 | `claude auth status` 返回 JSON，校验 `loggedIn` 并报告登录方式与订阅类型 |
@@ -239,10 +242,12 @@ ORCH_EXECUTORS="codex,claude-code" python3 run.py doctor
 - 只接受本机已经登录的执行器 CLI；
 - 不提供任何模型 API 调用代码，也不向子进程传递常见 API Key（OpenAI 与 Anthropic 两侧都剥离）；
 - 规划和协调角色使用只读沙箱；
-- 实现、评审和 QA 可以写，但工作目录限定为该任务的独立 worktree；评审角色的提示明确禁止修改代码，允许写是为了让测试能够创建临时文件和缓存；
+- 实现、评审和 QA 可以写，但工作目录限定为该任务的独立 worktree；Claude 的 Bash 还要求原生 OS sandbox 成功启动，并禁止访问本机控制面；
+- 评审角色可以运行测试，但只要工作树出现已跟踪修改或未跟踪新文件，编排器就记录契约违规、拒绝提交并让任务失败；
 - Agent 提示明确禁止 push、merge、删分支、发布、部署和联系外部人员；
 - Git 服务只创建 worktree、本地分支、本地提交，并可在下游 worktree 中整合依赖分支；
 - 架构、安全策略、破坏性迁移、含糊产品决定和最终合并应保留人工确认；
+- 本机 HTTP 控制面只信任回环 Host；写请求要求 JSON 和同源浏览器上下文，以降低 DNS rebinding 与 CSRF 风险；
 - `.data` 可能包含代码副本、任务描述和运行输出，应按本地研发资料保护，不要提交到 Git。
 
 这不是强隔离的远程多租户执行平台。不要把监听地址开放到不可信网络，也不要把不可信仓库与敏感本机凭据混在同一用户环境中运行。

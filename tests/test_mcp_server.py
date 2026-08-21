@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import http.client
 import json
 import tempfile
 import threading
@@ -41,9 +42,11 @@ class FakeScheduler:
         }
 
     def submit(self, task_id: str) -> bool:
+        queued = self.db.queue_task(task_id)
+        if not queued:
+            raise RuntimeError("Task is not in a startable state")
         self.submitted.append(task_id)
-        self.db.queue_task(task_id)
-        return True
+        return queued
 
     def resolve_approval(self, task_id, approved, note):  # pragma: no cover - human path
         raise AssertionError("MCP must never reach approvals")
@@ -61,13 +64,13 @@ class MCPServerTests(unittest.TestCase):
         self.db.initialize()
         self.git = GitService(root / "worktrees")
         self.scheduler = FakeScheduler(self.db)
-        app = Application(
+        self.app = Application(
             self.db,
             self.git,
             self.scheduler,
             Path(__file__).resolve().parent.parent / "orchestrator" / "static",
         )
-        self.server = create_server("127.0.0.1", 0, app)
+        self.server = create_server("127.0.0.1", 0, self.app)
         self.thread = threading.Thread(
             target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
         )
@@ -195,6 +198,38 @@ class MCPServerTests(unittest.TestCase):
             with self.assertRaises(mcp_server.OrchestratorError):
                 client.request(method, path, {} if method == "POST" else None)
 
+    def test_http_control_plane_rejects_cross_origin_and_non_json_posts(self):
+        host, port = self.server.server_address[:2]
+
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/tasks",
+            body="{}",
+            headers={"Content-Type": "text/plain"},
+        )
+        self.assertEqual(connection.getresponse().status, 415)
+        connection.close()
+
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request(
+            "POST",
+            "/api/tasks",
+            body="{}",
+            headers={
+                "Content-Type": "application/json",
+                "Origin": "https://attacker.example",
+                "Sec-Fetch-Site": "cross-site",
+            },
+        )
+        self.assertEqual(connection.getresponse().status, 403)
+        connection.close()
+
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("GET", "/api/health", headers={"Host": "attacker.example"})
+        self.assertEqual(connection.getresponse().status, 421)
+        connection.close()
+
     def test_non_loopback_url_is_refused(self):
         with self.assertRaises(ValueError):
             OrchestratorClient("http://192.168.1.10:8765")
@@ -209,6 +244,15 @@ class MCPServerTests(unittest.TestCase):
         cold = self.call_ok("get_status")
         self.assertTrue(cold["agent"]["ready"])
         self.assertEqual(cold["board_url"], self.base_url)
+
+    def test_task_detail_surfaces_operator_alerts(self):
+        task = self.db.create_task(self.project["id"], "Fail visibly")
+        self.db.add_event(task["id"], None, "run.failed", {"error": "pytest failed"})
+
+        status, payload = self.app.get("/api/tasks/%s" % task["id"], {})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["alerts"][0]["message"], "pytest failed")
 
     def test_plan_workflow_forces_delegation_and_approval(self):
         payload = self.call_ok(
@@ -380,6 +424,15 @@ class MCPServerTests(unittest.TestCase):
         self.db.update_task(task["id"], status=TaskStatus.FAILED.value, queued=False)
         retried = self.call_ok("retry_task", {"task_id": task["id"]})
         self.assertTrue(retried["queued"])
+
+    def test_run_task_cannot_bypass_the_human_review_gate(self):
+        task = self.db.create_task(self.project["id"], "Await human review")
+        self.db.update_task(task["id"], status=TaskStatus.REVIEW.value)
+        error = self.call_err("run_task", {"task_id": task["id"]})
+        self.assertIn("startable state", error)
+        unchanged = self.db.get_task(task["id"])
+        self.assertEqual(unchanged["status"], TaskStatus.REVIEW.value)
+        self.assertFalse(unchanged["queued"])
 
     def test_get_diff_reports_branch_changes_and_honours_max_chars(self):
         task = self.db.create_task(

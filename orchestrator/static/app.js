@@ -232,6 +232,19 @@ function renderTaskDetail(task) {
   const ranChecks = evidence.length
     ? `<ul class="evidence-list">${evidence.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
     : `<div class="evidence-empty">Agent 没有报告任何检查。批准前请自行确认。</div>`;
+  const severityLabels = { error: "错误", warning: "警告", info: "提示" };
+  const alerts = (task.alerts || []).length
+    ? (task.alerts || []).map((alert) => `
+      <div class="runtime-alert ${escapeHtml(alert.severity)}">
+        <div class="runtime-alert-head">
+          <span class="alert-severity">${escapeHtml(severityLabels[alert.severity] || alert.severity)}</span>
+          <code>${escapeHtml(alert.type)}</code>
+          ${alert.occurrences > 1 ? `<span class="alert-count">重复 ${alert.occurrences} 次</span>` : ""}
+          <time>${escapeHtml(alert.created_at)}</time>
+        </div>
+        <div class="runtime-alert-message">${escapeHtml(alert.message)}</div>
+      </div>`).join("")
+    : '<div class="monitor-ok">没有发现需要处理的运行异常。</div>';
   const events = (task.runs || []).slice(0, 8).map((run) => `
     <div class="event"><strong>${escapeHtml(run.status)} · ${escapeHtml(run.started_at)}</strong><pre>${escapeHtml(JSON.stringify(run.usage || {}, null, 2))}</pre></div>
   `).join("") || '<div class="empty-column">尚未执行</div>';
@@ -244,6 +257,7 @@ function renderTaskDetail(task) {
     </div>
     ${error}${approval}
     <div class="task-actions">${actions}</div>
+    <section class="detail-section"><h3>运行异常与警告</h3><div class="runtime-alert-list">${alerts}</div></section>
     <section class="detail-section"><h3>目标与边界</h3><div class="detail-text">${escapeHtml(task.description || "未填写")}</div></section>
     <section class="detail-section"><h3>Agent 摘要</h3><div class="detail-text">${escapeHtml(task.summary || "Agent 尚未提交摘要。")}</div></section>
     <section class="detail-section"><h3>检查证据（Agent 自报）</h3>${ranChecks}</section>

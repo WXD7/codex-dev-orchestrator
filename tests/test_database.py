@@ -86,6 +86,36 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(awaiting[0]["project_name"], "Demo")
         self.assertEqual(awaiting[0]["summary"], "Added endpoint")
 
+    def test_alert_events_filter_noise_and_group_repeated_signals(self):
+        task = self.db.create_task(self.project["id"], "Observe runtime")
+        self.db.add_event(
+            task["id"],
+            None,
+            "codex.stderr",
+            {"line": "2026-08-21T08:00:00Z WARN codex_skills::interface: ignoring interface.icon_small: bad path"},
+        )
+        for timestamp in ("08:01:00", "08:02:00"):
+            self.db.add_event(
+                task["id"],
+                None,
+                "codex.stderr",
+                {"line": "2026-08-21T%sZ WARN sandbox violation" % timestamp},
+            )
+        self.db.add_event(
+            task["id"], None, "task.quota_deferred", {"reason": "五小时额度待刷新"}
+        )
+        self.db.add_event(task["id"], None, "run.failed", {"error": "tests failed"})
+
+        alerts = self.db.list_alert_events(task["id"])
+
+        self.assertEqual(
+            [item["type"] for item in alerts],
+            ["run.failed", "task.quota_deferred", "codex.stderr"],
+        )
+        self.assertEqual(alerts[2]["occurrences"], 2)
+        self.assertEqual(alerts[2]["severity"], "error")
+        self.assertEqual(alerts[2]["message"], "WARN sandbox violation")
+
 
 if __name__ == "__main__":
     unittest.main()

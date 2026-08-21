@@ -63,6 +63,21 @@ class EditingReviewer(FakeAgent):
         return result
 
 
+class NewFileReviewer(FakeAgent):
+    """A reviewer that creates a new tracked candidate instead of reporting."""
+
+    name = "new-file-reviewer"
+    label = "New-file fake"
+
+    def run(self, run_id, role, worktree, prompt, session_id, on_event):
+        (Path(worktree) / "reviewer_added.py").write_text(
+            "print('review edit')\n", encoding="utf-8"
+        )
+        result = super().run(run_id, role, worktree, prompt, session_id, on_event)
+        result.final["proposed_tasks"] = []
+        return result
+
+
 class UnavailableAgent(FakeAgent):
     name = "offline"
     label = "Offline executor"
@@ -169,6 +184,15 @@ class SchedulerTests(unittest.TestCase):
                 scheduler.submit(task["id"])
         finally:
             scheduler.stop()
+
+    def test_review_gate_cannot_be_requeued_as_ordinary_work(self):
+        task = self.db.create_task(self.project["id"], "Await human review")
+        self.db.update_task(task["id"], status="review")
+        with self.assertRaisesRegex(RuntimeError, "只有待处理或可执行"):
+            self.scheduler.submit(task["id"])
+        unchanged = self.db.get_task(task["id"])
+        self.assertEqual(unchanged["status"], "review")
+        self.assertFalse(unchanged["queued"])
 
     def test_empty_agent_block_summary_still_gets_a_stable_reason(self):
         task = self.db.create_task(self.project["id"], "Ambiguous blocker")
@@ -297,6 +321,32 @@ class SchedulerTests(unittest.TestCase):
             log = subprocess.run(
                 ["git", "log", "--oneline", "main..HEAD"],
                 cwd=worktree,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(log.stdout.strip(), "")
+        finally:
+            scheduler.stop()
+
+    def test_reviewer_new_files_are_rejected_and_never_committed(self):
+        self.scheduler.stop()
+        agents = AgentRegistry([NewFileReviewer()], "new-file-reviewer")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        scheduler.start()
+        try:
+            task = self.db.create_task(
+                self.project["id"], "Review without adding files", role="reviewer"
+            )
+            scheduler.submit(task["id"])
+            end = time.time() + 5
+            while time.time() < end and self.db.get_task(task["id"])["status"] != "failed":
+                time.sleep(0.05)
+            failed = self.db.get_task(task["id"])
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("修改或新增", failed["error"])
+            log = subprocess.run(
+                ["git", "log", "--oneline", "main..HEAD"],
+                cwd=failed["worktree_path"],
                 capture_output=True,
                 text=True,
             )

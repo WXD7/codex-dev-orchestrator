@@ -17,6 +17,7 @@ from .models import AgentRunResult, PreflightResult
 from .quota import (
     QuotaSnapshot,
     SchedulingDecision,
+    active_quota_snapshot,
     choose_model_tier,
     decision_reason,
     quota_mode,
@@ -150,7 +151,11 @@ class AgentRegistry:
             snapshot = reader()
         except Exception as exc:
             return QuotaSnapshot.unknown(name, str(exc) or exc.__class__.__name__)
-        return snapshot if isinstance(snapshot, QuotaSnapshot) else QuotaSnapshot.unknown(name)
+        return (
+            active_quota_snapshot(snapshot)
+            if isinstance(snapshot, QuotaSnapshot)
+            else QuotaSnapshot.unknown(name)
+        )
 
     def quota_snapshots(self, force: bool = False) -> Dict[str, QuotaSnapshot]:
         return {
@@ -169,8 +174,22 @@ class AgentRegistry:
         project = project or {}
         locked = ""
         locked_reason = ""
-        if task.get("session_id") and task.get("assigned_executor") in self._executors:
-            locked = str(task["assigned_executor"])
+        if task.get("session_id"):
+            session_executor = str(
+                task.get("assigned_executor") or task.get("executor") or ""
+            ).strip()
+            if not session_executor and len(self._executors) == 1:
+                session_executor = self.names[0]
+            if not session_executor:
+                raise RuntimeError(
+                    "现有会话缺少执行器归属，不能安全地跨 CLI 恢复"
+                )
+            if session_executor not in self._executors:
+                raise RuntimeError(
+                    "现有会话绑定的执行器 %s 当前未启用，不能切换到其他 CLI 恢复"
+                    % session_executor
+                )
+            locked = session_executor
             locked_reason = "沿用现有会话执行器"
         elif str(task.get("executor", "")).strip() in self._executors:
             locked = str(task["executor"]).strip()

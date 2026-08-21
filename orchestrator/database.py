@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -9,6 +10,26 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
 from .models import TaskStatus
+
+
+ALERT_EVENT_SEVERITY = {
+    "run.failed": "error",
+    "task.executor_unavailable": "error",
+    "review.contract_violation": "error",
+    "task.blocked": "warning",
+    "task.quota_deferred": "warning",
+    "codex.stderr": "warning",
+    "claude.stderr": "warning",
+}
+
+# These messages are emitted by the local Codex installation while loading a
+# plugin icon. They do not describe the task or its sandbox, and four identical
+# warnings otherwise hide the one runtime violation an operator actually needs.
+IGNORED_ALERT_FRAGMENTS = (
+    "codex_skills::interface: ignoring interface.icon_",
+)
+
+LOG_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\S+\s+")
 
 
 def utc_now() -> str:
@@ -536,13 +557,30 @@ class Database:
             raise ValueError("Task not found")
         if task["queued"] or task["status"] == TaskStatus.RUNNING.value:
             return False
+        if task["status"] not in (
+            TaskStatus.BACKLOG.value,
+            TaskStatus.READY.value,
+        ):
+            return False
         if not self.dependencies_complete(task_id):
             self.update_task(task_id, status=TaskStatus.BLOCKED.value, queued=False)
             return False
-        if task["status"] in (TaskStatus.DONE.value, TaskStatus.WAITING_APPROVAL.value):
-            return False
-        self.update_task(task_id, status=TaskStatus.READY.value, queued=True)
-        return True
+        with self.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE tasks
+                SET status = ?, queued = 1, updated_at = ?
+                WHERE id = ? AND queued = 0 AND status IN (?, ?)
+                """,
+                (
+                    TaskStatus.READY.value,
+                    utc_now(),
+                    task_id,
+                    TaskStatus.BACKLOG.value,
+                    TaskStatus.READY.value,
+                ),
+            )
+        return cursor.rowcount == 1
 
     def list_auto_startable(self) -> List[str]:
         with self.connection() as conn:
@@ -702,6 +740,80 @@ class Database:
             item["payload"] = json.loads(item.pop("payload_json") or "{}")
             result.append(item)
         return result
+
+    def list_alert_events(self, task_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return operator-facing failures and warnings, newest first.
+
+        The event table remains the lossless audit log. This view is deliberately
+        smaller: known installation noise is removed and repeated lines are
+        grouped so a noisy CLI cannot bury the actionable signal.
+        """
+        bounded_limit = max(1, min(100, int(limit)))
+        event_types = tuple(ALERT_EVENT_SEVERITY)
+        placeholders = ",".join("?" for _ in event_types)
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM events
+                WHERE task_id = ? AND type IN (%s)
+                ORDER BY id DESC LIMIT 3000
+                """ % placeholders,
+                (task_id, *event_types),
+            ).fetchall()
+
+        alerts: List[Dict[str, Any]] = []
+        grouped: Dict[Any, Dict[str, Any]] = {}
+        for row in rows:
+            event = dict(row)
+            payload = json.loads(event.pop("payload_json") or "{}")
+            if not isinstance(payload, dict):
+                payload = {}
+            message = self._alert_message(event["type"], payload)
+            if not message or any(fragment in message for fragment in IGNORED_ALERT_FRAGMENTS):
+                continue
+            dedupe_message = LOG_TIMESTAMP.sub("", message).strip()
+            key = (event["type"], dedupe_message)
+            existing = grouped.get(key)
+            if existing:
+                existing["occurrences"] += 1
+                continue
+            severity = ALERT_EVENT_SEVERITY[event["type"]]
+            lowered = message.lower()
+            if event["type"].endswith(".stderr") and re.search(
+                r"\b(error|fatal|panic|violation)\b", lowered
+            ):
+                severity = "error"
+            alert = {
+                "id": event["id"],
+                "run_id": event["run_id"],
+                "type": event["type"],
+                "severity": severity,
+                "message": LOG_TIMESTAMP.sub("", message).strip()[:1200],
+                "occurrences": 1,
+                "created_at": event["created_at"],
+            }
+            grouped[key] = alert
+            alerts.append(alert)
+            if len(alerts) >= bounded_limit:
+                break
+        return alerts
+
+    @staticmethod
+    def _alert_message(event_type: str, payload: Dict[str, Any]) -> str:
+        if event_type == "task.blocked":
+            return str(payload.get("reason") or "Agent 报告任务被阻塞")
+        if event_type == "task.quota_deferred":
+            return str(payload.get("reason") or "订阅额度不足，任务等待额度窗口刷新")
+        if event_type == "review.contract_violation":
+            files = payload.get("files") or []
+            if isinstance(files, list) and files:
+                return "独立评审者修改或新增了文件：%s" % "、".join(
+                    str(item) for item in files[:10]
+                )
+            return "独立评审者修改了工作树，违反评审契约"
+        if event_type.endswith(".stderr"):
+            return str(payload.get("line") or "")
+        return str(payload.get("error") or payload.get("reason") or event_type)
 
     def create_approval(
         self, task_id: str, question: str, kind: str = "resume"

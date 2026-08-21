@@ -7,8 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from orchestrator.agent_base import clean_environment, extract_structured_result
+from orchestrator.agent_base import clean_environment, extract_structured_result, quick
 from orchestrator.claude_agent import (
+    CLAUDE_SANDBOX_SETTINGS,
     DISALLOWED_TOOLS,
     EMPTY_MCP_CONFIG,
     ClaudeCodeAgent,
@@ -149,6 +150,31 @@ class ClaudeAgentTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("not signed in", result.problems[0])
 
+    def test_preflight_rejects_api_key_and_unverifiable_authentication(self):
+        self.set_env(
+            FAKE_AUTH=json.dumps(
+                {"loggedIn": True, "authMethod": "api_key", "subscriptionType": ""}
+            )
+        )
+        api_key = self.agent.preflight()
+        self.assertFalse(api_key.ok)
+        self.assertIn("not an API key", api_key.problems[0])
+
+        self.set_env(FAKE_AUTH="unstructured success")
+        unstructured = self.agent.preflight()
+        self.assertFalse(unstructured.ok)
+        self.assertIn("Could not verify", unstructured.problems[0])
+
+    def test_preflight_rejects_login_without_a_verified_subscription(self):
+        self.set_env(
+            FAKE_AUTH=json.dumps(
+                {"loggedIn": True, "authMethod": "claude.ai", "subscriptionType": ""}
+            )
+        )
+        result = self.agent.preflight()
+        self.assertFalse(result.ok)
+        self.assertIn("subscription type", result.problems[0])
+
     def test_schema_argument_strips_the_unresolvable_meta_reference(self):
         # The real CLI rejects a $schema it cannot dereference.
         argument = json.loads(self.agent.schema_argument())
@@ -168,6 +194,14 @@ class ClaudeAgentTests(unittest.TestCase):
         command = self.agent.build_command("implementer", self.root, "do it")
         self.assertIn("--strict-mcp-config", command)
         self.assertEqual(command[command.index("--mcp-config") + 1], EMPTY_MCP_CONFIG)
+        settings = json.loads(command[command.index("--settings") + 1])
+        self.assertEqual(settings, json.loads(CLAUDE_SANDBOX_SETTINGS))
+        self.assertTrue(settings["sandbox"]["enabled"])
+        self.assertTrue(settings["sandbox"]["failIfUnavailable"])
+        self.assertFalse(settings["sandbox"]["allowUnsandboxedCommands"])
+        self.assertIn(
+            "127.0.0.1", settings["sandbox"]["network"]["deniedDomains"]
+        )
 
     def test_read_only_roles_cannot_reach_editing_tools(self):
         planner = self.agent.build_command("planner", self.root, "plan")
@@ -225,6 +259,12 @@ class ClaudeAgentTests(unittest.TestCase):
         env = clean_environment()
         self.assertNotIn("ANTHROPIC_API_KEY", env)
         self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN", env)
+
+    def test_preflight_subprocesses_also_strip_sensitive_environment(self):
+        self.set_env(OPENAI_API_KEY="must-not-leak", ANTHROPIC_API_KEY="also-secret")
+        result = quick(["/usr/bin/env"])
+        self.assertNotIn("OPENAI_API_KEY=", result.stdout)
+        self.assertNotIn("ANTHROPIC_API_KEY=", result.stdout)
 
     # -- run --------------------------------------------------------------
 
