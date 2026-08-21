@@ -177,3 +177,23 @@ textarea { resize: vertical; }
   .workspace { margin-left: 224px; width: calc(100% - 224px); padding-left: 25px; padding-right: 25px; }
   .task-drawer { width: 520px; }
 }
+
+.task-executor {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line, #d6d9e0);
+  color: var(--muted, #6b7280);
+  white-space: nowrap;
+}
+
+.evidence-list { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.8; }
+.evidence-list li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.evidence-empty {
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #e6b8b8;
+  background: #fdf3f3;
+  color: #8a3b3b;
+}

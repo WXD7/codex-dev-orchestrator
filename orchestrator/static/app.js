@@ -1,8 +1,11 @@
+const executorLabels = {};
+
 const state = {
   projects: [],
   tasks: [],
   currentProject: null,
   openTaskId: null,
+  executors: [],
   polling: null,
 };
 
@@ -60,10 +63,15 @@ async function loadHealth() {
     const health = await api("/api/health");
     const node = $("#agent-health");
     const agent = health.agent;
+    state.executors = agent.executors || [];
+    state.executors.forEach((item) => { executorLabels[item.name] = item.label; });
+    const ready = state.executors.filter((item) => item.ready);
     node.className = `health-card ${agent.ready ? "ok" : "error"}`;
-    node.querySelector("strong").textContent = agent.ready ? "Codex 执行器就绪" : "Codex 执行器不可用";
+    node.querySelector("strong").textContent = agent.ready
+      ? `执行器就绪：${ready.map((item) => item.label).join("、") || agent.auth_status}`
+      : "没有可用的执行器";
     node.querySelector("small").textContent = agent.ready
-      ? `${agent.auth_status} · ${agent.workers} 个工位`
+      ? `默认 ${agent.default} · ${agent.workers} 个工位${agent.problems.length ? " · " + agent.problems[0] : ""}`
       : (agent.problems[0] || "请运行 doctor");
   } catch (error) {
     $("#agent-health").className = "health-card error";
@@ -158,12 +166,13 @@ function taskCard(task) {
     task.worktree_path ? '<span class="tiny-flag" title="已有独立 worktree">⑂</span>' : "",
   ].join("");
   const body = task.summary || task.description || "尚无说明";
+  const executor = task.executor ? `<span class="task-executor">${escapeHtml(executorLabels[task.executor] || task.executor)}</span>` : "";
   return `
     <article class="task-card" data-task-id="${task.id}">
       <div class="task-card-top"><span class="role-pill">${escapeHtml(roles[task.role] || task.role)}</span><span class="task-id">${escapeHtml(task.id.slice(-6))}</span></div>
       <h4>${escapeHtml(task.title)}</h4>
       <p>${escapeHtml(body)}</p>
-      <div class="task-card-footer"><span>P${task.priority}</span><span class="tiny-flags">${flags}</span></div>
+      <div class="task-card-footer"><span>P${task.priority}</span>${executor}<span class="tiny-flags">${flags}</span></div>
     </article>`;
 }
 
@@ -178,6 +187,7 @@ async function openTask(taskId, silent = false) {
     $("#task-drawer").setAttribute("aria-hidden", "false");
     $("#drawer-backdrop").classList.add("open");
     bindDrawer(task);
+    if (!silent) history.replaceState(null, "", `#/task/${taskId}`);
   } catch (error) {
     if (!silent) toast(error.message, true);
   }
@@ -200,6 +210,11 @@ function renderTaskDetail(task) {
   const children = task.children.length
     ? task.children.map((item) => `${escapeHtml(item.title)}（${Object.fromEntries(columns)[item.status] || item.status}）`).join("、")
     : "无";
+  let evidence = [];
+  try { evidence = JSON.parse(task.evidence || "[]"); } catch (error) { evidence = []; }
+  const ranChecks = evidence.length
+    ? `<ul class="evidence-list">${evidence.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : `<div class="evidence-empty">Agent 没有报告任何检查。批准前请自行确认。</div>`;
   const events = (task.runs || []).slice(0, 8).map((run) => `
     <div class="event"><strong>${escapeHtml(run.status)} · ${escapeHtml(run.started_at)}</strong><pre>${escapeHtml(JSON.stringify(run.usage || {}, null, 2))}</pre></div>
   `).join("") || '<div class="empty-column">尚未执行</div>';
@@ -213,6 +228,7 @@ function renderTaskDetail(task) {
     <div class="task-actions">${actions}</div>
     <section class="detail-section"><h3>目标与边界</h3><div class="detail-text">${escapeHtml(task.description || "未填写")}</div></section>
     <section class="detail-section"><h3>Agent 摘要</h3><div class="detail-text">${escapeHtml(task.summary || "Agent 尚未提交摘要。")}</div></section>
+    <section class="detail-section"><h3>检查证据（Agent 自报）</h3>${ranChecks}</section>
     <section class="detail-section"><h3>交接说明</h3><div class="detail-text">${escapeHtml(task.handoff || "暂无交接信息。")}</div></section>
     <section class="detail-section"><h3>任务关系</h3><div class="detail-text">前置：${dependencies}\n子任务：${children}</div></section>
     <section class="detail-section">
@@ -317,6 +333,7 @@ $("#decision-form").addEventListener("submit", async (event) => {
 
 function closeDrawer() {
   state.openTaskId = null;
+  if (location.hash.startsWith("#/task/")) history.replaceState(null, "", location.pathname);
   $("#task-drawer").classList.remove("open");
   $("#task-drawer").setAttribute("aria-hidden", "true");
   $("#drawer-backdrop").classList.remove("open");
@@ -325,6 +342,10 @@ function closeDrawer() {
 function openProjectDialog() { $("#project-dialog").showModal(); }
 function openTaskDialog() {
   if (!state.currentProject) return;
+  const executor = $("#task-form [name=executor]");
+  executor.innerHTML = `<option value="">项目默认</option>${state.executors
+    .map((item) => `<option value="${item.name}"${item.ready ? "" : " disabled"}>${escapeHtml(item.label)}${item.ready ? "" : " · 不可用"}</option>`)
+    .join("")}`;
   const parent = $("#task-form [name=parent_id]");
   const dependencies = $("#task-form [name=dependencies]");
   const options = state.tasks.filter((task) => task.status !== "done").map((task) => `<option value="${task.id}">${escapeHtml(task.title)} · ${escapeHtml(Object.fromEntries(columns)[task.status] || task.status)}</option>`).join("");
@@ -378,8 +399,30 @@ $("#refresh-board").addEventListener("click", () => loadTasks());
 $("#close-drawer").addEventListener("click", closeDrawer);
 $("#drawer-backdrop").addEventListener("click", closeDrawer);
 
+function deepLinkTaskId() {
+  const match = /^#\/task\/([A-Za-z0-9_]+)$/.exec(location.hash);
+  return match ? match[1] : null;
+}
+
+// Deep links let the MCP layer point a human at the exact task that needs a
+// decision, without ever making the decision itself.
+async function followDeepLink() {
+  const taskId = deepLinkTaskId();
+  if (!taskId || taskId === state.openTaskId) return;
+  try {
+    const task = await api(`/api/tasks/${taskId}`);
+    if (state.currentProject?.id !== task.project_id) await selectProject(task.project_id);
+    await openTask(taskId);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+window.addEventListener("hashchange", () => followDeepLink());
+
 async function boot() {
   await Promise.all([loadHealth(), loadProjects()]);
+  await followDeepLink();
   state.polling = setInterval(() => {
     loadHealth();
     if (state.currentProject) loadTasks(true);

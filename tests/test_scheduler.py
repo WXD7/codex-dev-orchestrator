@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
+from orchestrator.agents import AgentRegistry
 from orchestrator.database import Database
 from orchestrator.git_service import GitService
 from orchestrator.models import AgentRunResult, PreflightResult
@@ -13,6 +16,9 @@ from tests.helpers import make_git_repo
 
 
 class FakeAgent:
+    name = "fake"
+    label = "Fake executor"
+
     def preflight(self):
         return PreflightResult(True, "fake", "Logged in using ChatGPT", [])
 
@@ -42,6 +48,28 @@ class FakeAgent:
         )
 
 
+class EditingReviewer(FakeAgent):
+    """A reviewer that quietly edits product code instead of reporting."""
+
+    name = "editing"
+    label = "Editing fake"
+
+    def run(self, run_id, role, worktree, prompt, session_id, on_event):
+        (Path(worktree) / "README.md").write_text("silently rewritten\n", encoding="utf-8")
+        result = super().run(run_id, role, worktree, prompt, session_id, on_event)
+        result.final["proposed_tasks"] = []
+        result.final["tests"] = ["pytest: pass"]
+        return result
+
+
+class UnavailableAgent(FakeAgent):
+    name = "offline"
+    label = "Offline executor"
+
+    def preflight(self):
+        return PreflightResult(False, "", "", ["Offline CLI not found"])
+
+
 class SchedulerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -51,7 +79,8 @@ class SchedulerTests(unittest.TestCase):
         self.db.initialize()
         self.project = self.db.create_project("Demo", str(repo), "main")
         self.git = GitService(root / "worktrees")
-        self.scheduler = TaskScheduler(self.db, self.git, FakeAgent(), max_workers=1)
+        self.agents = AgentRegistry([FakeAgent()], "fake")
+        self.scheduler = TaskScheduler(self.db, self.git, self.agents, max_workers=1)
         self.scheduler.start()
 
     def tearDown(self):
@@ -112,6 +141,198 @@ class SchedulerTests(unittest.TestCase):
         blocked = self.db.get_task(task["id"])
         self.assertEqual(blocked["status"], "blocked")
         self.assertTrue(blocked["error"])
+
+    def test_task_runs_on_its_own_executor_and_children_inherit_it(self):
+        second = FakeAgent()
+        second.name = "fake-2"
+        second.label = "Second fake"
+        agents = AgentRegistry([FakeAgent(), second], "fake")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        scheduler.start()
+        try:
+            parent = self.db.create_task(
+                self.project["id"],
+                "Plan on the second executor",
+                role="coordinator",
+                executor="fake-2",
+                allow_delegation=True,
+            )
+            self.assertEqual(scheduler.executor_for(parent["id"]), "fake-2")
+            scheduler.submit(parent["id"])
+            end = time.time() + 5
+            while time.time() < end and self.db.get_task(parent["id"])["status"] != "done":
+                time.sleep(0.05)
+            parent = self.db.get_task(parent["id"])
+            self.assertEqual(parent["status"], "done")
+            child = self.db.get_task(parent["children"][0]["id"])
+            self.assertEqual(child["executor"], "fake-2")
+        finally:
+            scheduler.stop()
+
+    def test_project_default_executor_applies_when_the_task_has_none(self):
+        project = self.db.create_project(
+            "Defaulted", self.project["repo_path"], "main", default_executor="fake"
+        )
+        task = self.db.create_task(project["id"], "Inherit the project default")
+        self.assertEqual(self.scheduler.executor_for(task["id"]), "fake")
+
+    def test_submitting_a_task_whose_executor_is_missing_reports_why(self):
+        agents = AgentRegistry([FakeAgent(), UnavailableAgent()], "fake")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        scheduler.start()
+        try:
+            task = self.db.create_task(
+                self.project["id"], "Needs the offline CLI", executor="offline"
+            )
+            with self.assertRaises(RuntimeError) as caught:
+                scheduler.submit(task["id"])
+            self.assertIn("offline", str(caught.exception))
+            self.assertIn("Offline CLI not found", str(caught.exception))
+            # The healthy executor still works.
+            healthy = self.db.create_task(self.project["id"], "Runs fine")
+            self.assertTrue(scheduler.submit(healthy["id"]))
+        finally:
+            scheduler.stop()
+
+    def test_auto_start_failure_marks_the_task_instead_of_killing_the_monitor(self):
+        # Only one monitor may watch this database, or the default scheduler
+        # would claim the auto-start task before the one under test sees it.
+        self.scheduler.stop()
+        agents = AgentRegistry([FakeAgent(), UnavailableAgent()], "fake")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        scheduler.start()
+        try:
+            broken = self.db.create_task(
+                self.project["id"],
+                "Auto task on a missing executor",
+                executor="offline",
+                auto_start=True,
+            )
+            self.db.update_task(broken["id"], status="ready")
+            end = time.time() + 5
+            while time.time() < end and self.db.get_task(broken["id"])["status"] != "failed":
+                time.sleep(0.05)
+            failed = self.db.get_task(broken["id"])
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("Offline CLI not found", failed["error"])
+
+            # The monitor survived: a healthy auto task still gets picked up.
+            healthy = self.db.create_task(
+                self.project["id"], "Healthy auto task", auto_start=True
+            )
+            self.db.update_task(healthy["id"], status="ready")
+            end = time.time() + 5
+            while time.time() < end and self.db.get_task(healthy["id"])["status"] != "done":
+                time.sleep(0.05)
+            self.assertEqual(self.db.get_task(healthy["id"])["status"], "done")
+        finally:
+            scheduler.stop()
+
+    def test_reviewer_edits_are_rejected_and_never_committed(self):
+        self.scheduler.stop()
+        agents = AgentRegistry([EditingReviewer()], "editing")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        scheduler.start()
+        try:
+            task = self.db.create_task(
+                self.project["id"], "Independent review", role="reviewer"
+            )
+            scheduler.submit(task["id"])
+            end = time.time() + 5
+            while time.time() < end and self.db.get_task(task["id"])["status"] != "failed":
+                time.sleep(0.05)
+            failed = self.db.get_task(task["id"])
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("README.md", failed["error"])
+            self.assertIn("独立评审契约", failed["error"])
+            # The report survives so a human can read what the reviewer claimed.
+            self.assertEqual(failed["summary"], "Plan created")
+            # Nothing was committed onto the branch.
+            worktree = failed["worktree_path"]
+            log = subprocess.run(
+                ["git", "log", "--oneline", "main..HEAD"],
+                cwd=worktree,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(log.stdout.strip(), "")
+        finally:
+            scheduler.stop()
+
+    def test_an_implementer_may_still_commit_its_changes(self):
+        self.scheduler.stop()
+        agents = AgentRegistry([EditingReviewer()], "editing")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        scheduler.start()
+        try:
+            task = self.db.create_task(
+                self.project["id"], "Implement something", role="implementer"
+            )
+            scheduler.submit(task["id"])
+            end = time.time() + 5
+            while time.time() < end and self.db.get_task(task["id"])["status"] != "done":
+                time.sleep(0.05)
+            done = self.db.get_task(task["id"])
+            self.assertEqual(done["status"], "done")
+            log = subprocess.run(
+                ["git", "log", "--oneline", "main..HEAD"],
+                cwd=done["worktree_path"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("Implement something", log.stdout)
+        finally:
+            scheduler.stop()
+
+    def test_reported_checks_are_stored_for_the_human_gate(self):
+        self.scheduler.stop()
+        agents = AgentRegistry([EditingReviewer()], "editing")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        scheduler.start()
+        try:
+            task = self.db.create_task(self.project["id"], "Do work", role="implementer")
+            scheduler.submit(task["id"])
+            end = time.time() + 5
+            while time.time() < end and self.db.get_task(task["id"])["status"] != "done":
+                time.sleep(0.05)
+            self.assertEqual(
+                json.loads(self.db.get_task(task["id"])["evidence"]), ["pytest: pass"]
+            )
+        finally:
+            scheduler.stop()
+
+    def test_an_agent_reporting_no_checks_leaves_an_empty_evidence_list(self):
+        task = self.db.create_task(self.project["id"], "No checks", role="implementer")
+        self.scheduler.submit(task["id"])
+        self.wait_for(task["id"], "done")
+        # FakeAgent reports tests=[]; the gate must show an explicit empty list
+        # rather than silently omitting the field.
+        self.assertEqual(json.loads(self.db.get_task(task["id"])["evidence"]), [])
+
+    def test_reviewer_children_are_assigned_a_different_executor(self):
+        second = FakeAgent()
+        second.name = "fake-2"
+        second.label = "Second fake"
+        agents = AgentRegistry([FakeAgent(), second], "fake")
+        scheduler = TaskScheduler(self.db, self.git, agents, max_workers=1)
+        parent = {"executor": "fake", "project_id": self.project["id"]}
+        self.assertEqual(scheduler._child_executor(parent, "reviewer"), "fake-2")
+        self.assertEqual(scheduler._child_executor(parent, "implementer"), "fake")
+        self.assertEqual(scheduler._child_executor(parent, "qa"), "fake")
+
+    def test_cross_review_falls_back_when_there_is_only_one_executor(self):
+        parent = {"executor": "fake", "project_id": self.project["id"]}
+        self.assertEqual(self.scheduler._child_executor(parent, "reviewer"), "fake")
+
+    def test_cross_review_can_be_switched_off(self):
+        second = FakeAgent()
+        second.name = "fake-2"
+        agents = AgentRegistry([FakeAgent(), second], "fake")
+        scheduler = TaskScheduler(
+            self.db, self.git, agents, max_workers=1, cross_review=False
+        )
+        parent = {"executor": "fake", "project_id": self.project["id"]}
+        self.assertEqual(scheduler._child_executor(parent, "reviewer"), "fake")
 
 
 if __name__ == "__main__":

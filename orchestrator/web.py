@@ -39,6 +39,11 @@ class Application:
             return 200, {"service": "ok", "agent": self.scheduler.health()}
         if path == "/api/projects":
             return 200, {"projects": self.db.list_projects()}
+        if path == "/api/approvals":
+            return 200, {
+                "approvals": self.db.list_pending_approvals(),
+                "reviews": self.db.list_tasks_awaiting_review(),
+            }
         if path.startswith("/api/projects/") and path.endswith("/tasks"):
             project_id = path.split("/")[3]
             self._project(project_id)
@@ -86,6 +91,7 @@ class Application:
                 base_branch=base_branch,
                 workflow=str(body.get("workflow", "feature-dev")),
                 auto_start=bool(body.get("auto_start", False)),
+                default_executor=self._executor(body.get("default_executor")),
             )
             return 201, project
         if path == "/api/tasks":
@@ -97,6 +103,7 @@ class Application:
             role = str(body.get("role", TaskRole.IMPLEMENTER.value))
             if role not in {item.value for item in TaskRole}:
                 raise ApiError(400, "无效的 Agent 角色")
+            executor = self._executor(body.get("executor"))
             dependencies = body.get("dependencies") or []
             if not isinstance(dependencies, list):
                 raise ApiError(400, "dependencies 必须是数组")
@@ -107,6 +114,7 @@ class Application:
                     title=title,
                     description=str(body.get("description", "")),
                     role=role,
+                    executor=executor,
                     status=TaskStatus.BACKLOG.value,
                     priority=int(body.get("priority", 50)),
                     requires_approval=bool(body.get("requires_approval", False)),
@@ -157,6 +165,15 @@ class Application:
                 except (ValueError, RuntimeError) as exc:
                     raise ApiError(409, str(exc)) from exc
                 return 200, self._task(task_id)
+            if action == "dependencies":
+                depends_on = str(body.get("depends_on", "")).strip()
+                if not depends_on:
+                    raise ApiError(400, "depends_on 不能为空")
+                try:
+                    self.db.add_dependency(task_id, depends_on)
+                except ValueError as exc:
+                    raise ApiError(400, str(exc)) from exc
+                return 201, self._task(task_id)
             if action == "retry":
                 if task["status"] not in (
                     TaskStatus.FAILED.value,
@@ -170,6 +187,18 @@ class Application:
                     raise ApiError(409, str(exc)) from exc
                 return 202, {"queued": queued, "task": self._task(task_id)}
         raise ApiError(404, "Not found")
+
+    def _executor(self, value: Any) -> str:
+        """Empty means inherit: project default, then deployment default."""
+        name = str(value or "").strip()
+        if not name:
+            return ""
+        available = self.scheduler.executor_names
+        if name not in available:
+            raise ApiError(
+                400, "未知的执行器 %s；可用：%s" % (name, ", ".join(available))
+            )
+        return name
 
     def _project(self, project_id: str) -> Dict[str, Any]:
         project = self.db.get_project(project_id)

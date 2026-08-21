@@ -125,6 +125,23 @@ class GitService:
         except ValueError as exc:
             raise GitError("Worktree path is outside the managed data directory") from exc
 
+    @staticmethod
+    def tracked_modifications(status: str) -> List[str]:
+        """Paths of tracked files a run changed, ignoring untracked artefacts.
+
+        `git status --short` marks untracked entries with `??`. Test caches and
+        scratch files land there and are harmless; edits to files already under
+        version control are what a read-only contract forbids.
+        """
+        changed: List[str] = []
+        for line in (status or "").splitlines():
+            if not line.strip() or line.startswith("??"):
+                continue
+            path = line[3:].strip()
+            if path:
+                changed.append(path)
+        return changed
+
     def snapshot(self, worktree_path: str, max_diff_chars: int = 50000) -> Dict[str, Any]:
         path = Path(worktree_path).resolve()
         self._assert_managed_path(path)

@@ -1,8 +1,10 @@
 # Codex Dev Orchestrator
 
-一个完全在本机运行的 AI 研发编排台。它把研发目标拆成有依赖关系的任务，让多个 Codex 执行单元分别承担规划、实现、独立评审和 QA，并在关键节点等待人工拍板。
+一个完全在本机运行的 AI 研发编排台。它把研发目标拆成有依赖关系的任务，让多个执行单元分别承担规划、实现、独立评审和 QA，并在关键节点等待人工拍板。
 
-它不调用 OpenAI API，也不读取或转发 API Key。执行端直接调用本机已经用 ChatGPT 登录的 Codex CLI，因此使用的是 Codex 订阅访问能力。
+执行端可以是 Codex CLI，也可以是 Claude Code CLI，按任务选择。无论用哪个，工程保证都由编排器持有：独立 worktree、按角色收紧的写权限、剥离 API Key 的环境、统一的结构化结果契约。
+
+它不调用任何模型 API，也不读取或转发 API Key。执行端直接调用本机已经登录的 CLI，用的是订阅访问能力。
 
 ## 已有能力
 
@@ -10,20 +12,24 @@
 - 多角色工作流：技术协调者、方案规划者、实现工程师、独立评审者和质量验证者；
 - 父子任务、显式依赖、循环依赖检查和完成后的自动解锁；
 - 协调 Agent 可提出最多 20 个子任务及其依赖；
+- 异构执行器：同一个任务图里，实现可以走 Codex，独立评审可以走 Claude Code；
 - 每个任务使用独立 Git worktree 和 `agent/...` 本地分支；
 - 下游任务从上游分支继续；有多个依赖时在自己的 worktree 中本地整合；
 - Codex JSONL 事件、结构化结论、token 使用量、会话 ID 和交接说明持久化；
-- 人工批准、拒绝、评审通过、要求修改以及同一 Codex 会话继续执行；
+- 独立评审自动分配给另一个执行器；评审者修改产品代码会被拒绝提交并判失败；
+- Agent 自报的检查记入账本并在闸门上呈现，空检查列表会显著标出；
+- 人工批准、拒绝、评审通过、要求修改以及同一会话继续执行；
 - SQLite 本地存储，服务重启后可恢复任务；
-- 完成变更后自动创建本地提交，但绝不自动 push、合并或部署。
+- 完成变更后自动创建本地提交，但绝不自动 push、合并或部署；
+- 可作为 MCP 服务接入任意 MCP 客户端（Claude Code、Codex CLI、LobeHub 等），但审批和评审仍然只能由人在本地看板完成。
 
 运行时仅使用 Python 3.9+ 标准库，没有第三方 Python 运行依赖。
 
 ## 运行条件
 
-1. macOS 或其他具备 Python 3.9+、Git 和 Codex CLI 的本机环境；
-2. 目标代码目录已经初始化为 Git 仓库，并至少有一个提交；
-3. Codex CLI 已通过 ChatGPT 登录。
+1. macOS 或其他具备 Python 3.9+ 和 Git 的本机环境；
+2. 至少一个已登录的执行器 CLI：Codex CLI（ChatGPT 登录）或 Claude Code CLI；
+3. 目标代码目录已经初始化为 Git 仓库，并至少有一个提交。
 
 先做一次检查：
 
@@ -80,6 +86,54 @@ python3 run.py serve --open
 
 执行器默认有 2 个并发工位。并发任务各自拥有独立 worktree，不会在同一个工作目录互相覆盖。
 
+## 作为 MCP 服务接入其他客户端
+
+编排器可以把自己暴露成一个标准 MCP（Model Context Protocol）服务，让外部的对话式客户端读取和扩展任务图、启动任务、查看 Diff。这一层是客户端无关的：Claude Code、Codex CLI、Cursor、LobeHub 都能连。
+
+先确保 `python3 run.py serve` 正在运行，然后：
+
+```bash
+python3 run.py mcp
+```
+
+它通过 stdio 说 JSON-RPC，只向本机 `127.0.0.1` 的编排器 HTTP API 转发请求。这个进程**不持有数据库、不启动调度器、不调用 Codex**，也拒绝连接任何非回环地址。
+
+在 MCP 客户端里的典型配置：
+
+```json
+{
+  "mcpServers": {
+    "codex-orchestrator": {
+      "command": "python3",
+      "args": ["run.py", "mcp"],
+      "cwd": "/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator"
+    }
+  }
+}
+```
+
+### 暴露的工具
+
+| 工具 | 作用 |
+| --- | --- |
+| `list_projects` | 列出人工登记过的仓库 |
+| `get_status` | 读取任务图：不带参数看健康状况，带 `project_id` 看分栏汇总，带 `task_id` 看单任务详情 |
+| `get_diff` | 读取某个任务分支相对基准分支的本地 Diff |
+| `list_pending_approvals` | 列出所有等待人工决定的审批和待评审任务，附看板深链 |
+| `plan_workflow` | 为一个研发目标创建协调者任务；`allow_delegation` 和 `requires_approval` 被强制为真 |
+| `create_task` | 向任务图追加一个任务，可用 `executor` 指定执行器 |
+| `add_dependency` | 建立依赖，循环由编排器拒绝 |
+| `run_task` | 把任务排入执行队列，在独立 worktree 中运行 |
+| `retry_task` | 重试失败或阻塞的任务 |
+
+### 刻意不暴露的操作
+
+批准、拒绝、评审通过、要求修改、登记新项目，以及给任务留人工消息——这些都不是工具。MCP 只会返回形如 `http://127.0.0.1:8765/#/task/tsk_xxxx` 的深链，由人打开本地看板决定。
+
+原因是这个工程的价值就在于闸门是确定性状态机，而不是提示词里的约定。把 `approve_task` 做成模型可调用的工具，等于把审批降级成"提示词里说要人类确认"；MCP 客户端的确认弹窗也不等于一条有身份、有理由、可审计的审批记录。同理，`message` 通道会让模型写入的内容以 `Human` 身份进入下游任务上下文，因此一并排除。
+
+转发层还有一份硬编码的接口白名单：即使以后新增工具，也无法构造出白名单以外的请求路径。
+
 ## 配置
 
 通过环境变量调整：
@@ -92,6 +146,11 @@ python3 run.py serve --open
 | `ORCH_MAX_WORKERS` | `2` | 同时运行的 Codex 任务数 |
 | `ORCH_CODEX_BINARY` | `codex` | Codex CLI 路径或命令名 |
 | `ORCH_CODEX_MODEL` | 空 | 可选的 Codex 模型覆盖；空表示使用本机默认配置 |
+| `ORCH_EXECUTORS` | `codex` | 启用的执行器，逗号分隔：`codex`、`claude-code` |
+| `ORCH_DEFAULT_EXECUTOR` | 列表第一个 | 任务和项目都没有指定时使用的执行器 |
+| `ORCH_CLAUDE_BINARY` | `claude`，回退 `CLAUDE_CODE_EXECPATH` | Claude Code CLI 路径或命令名 |
+| `ORCH_CLAUDE_MODEL` | 空 | 可选的 Claude Code 模型覆盖 |
+| `ORCH_CROSS_REVIEW` | `1` | 评审子任务是否自动换用另一个执行器 |
 | `ORCH_RUN_TIMEOUT_SECONDS` | `3600` | 单次执行超时，最低 60 秒 |
 
 例如换端口：
@@ -100,14 +159,56 @@ python3 run.py serve --open
 ORCH_PORT=8877 python3 run.py serve
 ```
 
+## 执行器
+
+默认只启用 Codex。要同时启用两个：
+
+```bash
+ORCH_EXECUTORS="codex,claude-code" python3 run.py serve
+```
+
+选择顺序是**任务指定 → 项目默认 → 部署默认**。新建任务时可以在"执行器"下拉里选，也可以通过 MCP 的 `executor` 参数指定。
+
+| | Codex CLI | Claude Code CLI |
+| --- | --- | --- |
+| 只读角色（协调、规划） | `--sandbox read-only` | 工具白名单只有 `Read,Grep,Glob` |
+| 写入角色（实现、评审、QA） | `--sandbox workspace-write` | 白名单加上 `Edit,Write,Bash` 等，并 `--permission-mode acceptEdits` |
+| 工作目录 | `--cd <worktree>` | 进程 cwd 固定为该任务 worktree |
+| 结构化结果 | CLI 原生 `--output-schema` | CLI 原生 `--json-schema`，结果从 `structured_output` 读取 |
+| 网络与发布 | 沙箱默认禁网 | `--disallowedTools` 拒绝 `WebFetch`、`WebSearch`、`git push`、`git merge` 等 |
+| 外部工具面 | 沙箱内无 MCP | `--mcp-config '{"mcpServers":{}}' --strict-mcp-config` 切断继承来的 MCP 服务 |
+| 会话恢复 | `exec resume <session>` | `--resume <session>` |
+| 登录检查 | `codex login status` 必须是 ChatGPT 登录 | `claude auth status` 返回 JSON，校验 `loggedIn` 并报告登录方式与订阅类型 |
+
+以上参数对照 Codex CLI `0.148.0-alpha.21` 和 Claude Code `2.1.237` 实测确认。两条容易踩的坑：`--json-schema` 不接受带 `$schema` 草案引用的 schema（编排器会自动剥掉），并且 `--allowedTools` 这类变长参数会吞掉紧随其后的提示词，所以提示词前必须有 `--` 结束符。
+
+两条永远不变的规则：任何执行器都不会拿到 `danger-full-access` 或 `--dangerously-skip-permissions`；任何执行器都不能 push、合并或部署。
+
+### CLI 不在 PATH 上
+
+两个 CLI 都可能装在非标准位置。Codex 桌面版在 `/Applications/ChatGPT.app/Contents/Resources/codex`；Claude Code 的 IDE 扩展版在 `~/.cursor/extensions/anthropic.claude-code-*/resources/native-binary/claude` 或 VS Code 的对应目录。用环境变量指过去即可：
+
+```bash
+ORCH_CODEX_BINARY="/Applications/ChatGPT.app/Contents/Resources/codex" \
+ORCH_EXECUTORS="codex,claude-code" python3 run.py doctor
+```
+
+`claude` 不在 PATH 且 `ORCH_CLAUDE_BINARY` 未设置时，编排器会回退到 `CLAUDE_CODE_EXECPATH`（从 IDE 终端启动时通常已经导出）。`doctor` 会明确告诉你哪个执行器找不到。
+
+某个执行器不可用不会拖垮看板——`doctor` 会分别列出每个执行器的状态，只要还有一个可用，其余任务照常运行；指定了不可用执行器的任务会单独失败并说明原因。
+
+```bash
+ORCH_EXECUTORS="codex,claude-code" python3 run.py doctor
+```
+
 ## 安全边界
 
 编排器的安全模型是“本机控制面 + 隔离工作树 + 人工闸门”：
 
-- 只接受本机已经通过 ChatGPT 登录的 Codex CLI；
-- 不提供 OpenAI API 调用代码，也不向子进程传递常见 API Key；
+- 只接受本机已经登录的执行器 CLI；
+- 不提供任何模型 API 调用代码，也不向子进程传递常见 API Key（OpenAI 与 Anthropic 两侧都剥离）；
 - 规划和协调角色使用只读沙箱；
-- 实现、评审和 QA 使用 `workspace-write`，但工作目录限定为该任务的独立 worktree；评审角色的提示明确禁止修改代码，允许写是为了让测试能够创建临时文件和缓存；
+- 实现、评审和 QA 可以写，但工作目录限定为该任务的独立 worktree；评审角色的提示明确禁止修改代码，允许写是为了让测试能够创建临时文件和缓存；
 - Agent 提示明确禁止 push、merge、删分支、发布、部署和联系外部人员；
 - Git 服务只创建 worktree、本地分支、本地提交，并可在下游 worktree 中整合依赖分支；
 - 架构、安全策略、破坏性迁移、含糊产品决定和最终合并应保留人工确认；

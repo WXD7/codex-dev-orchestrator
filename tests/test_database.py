@@ -57,6 +57,35 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(resolved["status"], "approved")
         self.assertIsNone(self.db.pending_approval(task["id"]))
 
+    def test_pending_approvals_and_reviews_span_projects(self):
+        other = self.db.create_project("Other", "/tmp/other")
+        first = self.db.create_task(self.project["id"], "Plan A", role="coordinator")
+        second = self.db.create_task(other["id"], "Plan B", role="coordinator")
+        self.db.create_approval(first["id"], "Approve A?", kind="complete")
+        self.db.create_approval(second["id"], "Approve B?", kind="resume")
+
+        pending = self.db.list_pending_approvals()
+        self.assertEqual(
+            [(item["task_id"], item["project_name"]) for item in pending],
+            [(first["id"], "Demo"), (second["id"], "Other")],
+        )
+        self.assertEqual(pending[0]["question"], "Approve A?")
+
+        self.db.resolve_approval(first["id"], True, "ok")
+        self.assertEqual(
+            [item["task_id"] for item in self.db.list_pending_approvals()], [second["id"]]
+        )
+
+    def test_tasks_awaiting_review_are_listed_with_project_context(self):
+        task = self.db.create_task(self.project["id"], "Implement")
+        self.assertEqual(self.db.list_tasks_awaiting_review(), [])
+        self.db.update_task(task["id"], status="review", summary="Added endpoint")
+        awaiting = self.db.list_tasks_awaiting_review()
+        self.assertEqual(len(awaiting), 1)
+        self.assertEqual(awaiting[0]["task_id"], task["id"])
+        self.assertEqual(awaiting[0]["project_name"], "Demo")
+        self.assertEqual(awaiting[0]["summary"], "Added endpoint")
+
 
 if __name__ == "__main__":
     unittest.main()

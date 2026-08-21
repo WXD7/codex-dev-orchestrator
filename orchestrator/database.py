@@ -51,6 +51,7 @@ class Database:
                     repo_path TEXT NOT NULL,
                     base_branch TEXT NOT NULL DEFAULT 'HEAD',
                     workflow TEXT NOT NULL DEFAULT 'feature-dev',
+                    default_executor TEXT NOT NULL DEFAULT '',
                     auto_start INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -63,6 +64,7 @@ class Database:
                     title TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
                     role TEXT NOT NULL DEFAULT 'implementer',
+                    executor TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'backlog',
                     priority INTEGER NOT NULL DEFAULT 50,
                     branch_name TEXT,
@@ -70,6 +72,7 @@ class Database:
                     session_id TEXT,
                     summary TEXT NOT NULL DEFAULT '',
                     handoff TEXT NOT NULL DEFAULT '',
+                    evidence TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '',
                     approval_question TEXT NOT NULL DEFAULT '',
                     requires_approval INTEGER NOT NULL DEFAULT 0,
@@ -158,6 +161,20 @@ class Database:
                 conn.execute(
                     "ALTER TABLE approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'resume'"
                 )
+            for table, column in (
+                ("tasks", "executor"),
+                ("tasks", "evidence"),
+                ("projects", "default_executor"),
+            ):
+                existing = {
+                    row["name"]
+                    for row in conn.execute("PRAGMA table_info(%s)" % table).fetchall()
+                }
+                if column not in existing:
+                    conn.execute(
+                        "ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''"
+                        % (table, column)
+                    )
 
     @staticmethod
     def _row(row: Optional[sqlite3.Row]) -> Optional[Dict[str, Any]]:
@@ -181,6 +198,7 @@ class Database:
         base_branch: str = "HEAD",
         workflow: str = "feature-dev",
         auto_start: bool = False,
+        default_executor: str = "",
     ) -> Dict[str, Any]:
         project_id = new_id("prj")
         now = utc_now()
@@ -188,8 +206,9 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO projects
-                    (id, name, repo_path, base_branch, workflow, auto_start, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, name, repo_path, base_branch, workflow, default_executor,
+                     auto_start, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -197,6 +216,7 @@ class Database:
                     repo_path,
                     base_branch or "HEAD",
                     workflow,
+                    default_executor.strip(),
                     int(auto_start),
                     now,
                     now,
@@ -232,6 +252,7 @@ class Database:
         title: str,
         description: str = "",
         role: str = "implementer",
+        executor: str = "",
         parent_id: Optional[str] = None,
         status: str = TaskStatus.BACKLOG.value,
         priority: int = 50,
@@ -252,10 +273,10 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO tasks (
-                    id, project_id, parent_id, title, description, role, status,
-                    priority, requires_approval, allow_delegation, auto_start,
+                    id, project_id, parent_id, title, description, role, executor,
+                    status, priority, requires_approval, allow_delegation, auto_start,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -264,6 +285,7 @@ class Database:
                     title.strip(),
                     description.strip(),
                     role,
+                    executor.strip(),
                     status,
                     max(0, min(100, int(priority))),
                     int(requires_approval),
@@ -284,7 +306,12 @@ class Database:
                     "UPDATE tasks SET status = ? WHERE id = ?",
                     (TaskStatus.BLOCKED.value, task_id),
                 )
-        self.add_event(task_id, None, "task.created", {"title": title, "role": role})
+        self.add_event(
+            task_id,
+            None,
+            "task.created",
+            {"title": title, "role": role, "executor": executor.strip()},
+        )
         return self.get_task(task_id)  # type: ignore[return-value]
 
     def _validate_dependency(
@@ -379,11 +406,13 @@ class Database:
     def update_task(self, task_id: str, **fields: Any) -> Dict[str, Any]:
         allowed = {
             "status",
+            "executor",
             "branch_name",
             "worktree_path",
             "session_id",
             "summary",
             "handoff",
+            "evidence",
             "error",
             "approval_question",
             "queued",
@@ -710,6 +739,41 @@ class Database:
                 (task_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def list_pending_approvals(self) -> List[Dict[str, Any]]:
+        """Every approval currently waiting on a human, across all projects."""
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT a.id, a.task_id, a.kind, a.question, a.created_at,
+                       t.title AS task_title, t.role AS task_role,
+                       t.status AS task_status, t.project_id,
+                       p.name AS project_name
+                FROM approvals a
+                JOIN tasks t ON t.id = a.task_id
+                JOIN projects p ON p.id = t.project_id
+                WHERE a.status = 'pending'
+                ORDER BY a.created_at ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_tasks_awaiting_review(self) -> List[Dict[str, Any]]:
+        """Tasks parked in human code review, across all projects."""
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.id AS task_id, t.title AS task_title, t.role AS task_role,
+                       t.summary, t.branch_name, t.project_id,
+                       t.updated_at, p.name AS project_name
+                FROM tasks t
+                JOIN projects p ON p.id = t.project_id
+                WHERE t.status = ?
+                ORDER BY t.updated_at ASC
+                """,
+                (TaskStatus.REVIEW.value,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def resolve_approval(self, task_id: str, approved: bool, note: str) -> Dict[str, Any]:
         approval = self.pending_approval(task_id)

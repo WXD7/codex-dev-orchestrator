@@ -1,22 +1,46 @@
 from __future__ import annotations
 
 import json
-import os
-import queue
 import shutil
-import subprocess
-import threading
-import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+from .agent_base import (
+    AgentExecutor,
+    EventCallback,
+    ProcessSupervisor,
+    StdoutParser,
+    clean_environment,
+    quick,
+    redacted_command,
+)
 from .models import AgentRunResult, PreflightResult, READ_ONLY_ROLES
 
 
-EventCallback = Callable[[str, Dict[str, Any]], None]
+class CodexStdoutParser(StdoutParser):
+    """Codex emits one JSON event per stdout line with --json."""
+
+    def handle(self, line: str, emit: EventCallback) -> None:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            emit("codex.stdout", {"line": line})
+            return
+        if not isinstance(event, dict):
+            emit("codex.stdout", {"line": line})
+            return
+        event_type = event.get("type", "codex.event")
+        if event_type == "thread.started":
+            self.session_id = event.get("thread_id") or self.session_id
+        if event_type == "turn.completed":
+            self.usage = event.get("usage") or self.usage
+        emit(event_type, event)
 
 
-class CodexAgent:
+class CodexAgent(AgentExecutor):
+    name = "codex"
+    label = "Codex CLI"
+
     def __init__(
         self,
         binary: str,
@@ -30,6 +54,7 @@ class CodexAgent:
         self.runs_dir = Path(runs_dir).resolve()
         self.model = model
         self.timeout_seconds = timeout_seconds
+        self.supervisor = ProcessSupervisor(timeout_seconds)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
 
     def preflight(self) -> PreflightResult:
@@ -73,11 +98,8 @@ class CodexAgent:
         )
 
     @staticmethod
-    def _quick(args: List[str]) -> subprocess.CompletedProcess:
-        try:
-            return subprocess.run(args, text=True, capture_output=True, timeout=20)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            return subprocess.CompletedProcess(args, 1, "", str(exc))
+    def _quick(args: List[str]):
+        return quick(args)
 
     def build_command(
         self,
@@ -126,25 +148,11 @@ class CodexAgent:
 
     @staticmethod
     def redacted_command(command: List[str]) -> List[str]:
-        if not command:
-            return []
-        result = list(command)
-        prompt = result[-1]
-        result[-1] = "<task prompt: %d chars>" % len(prompt)
-        return result
+        return redacted_command(command)
 
     @staticmethod
     def clean_environment() -> Dict[str, str]:
-        env = dict(os.environ)
-        for key in (
-            "OPENAI_API_KEY",
-            "CODEX_API_KEY",
-            "AZURE_OPENAI_API_KEY",
-            "OPENAI_BASE_URL",
-        ):
-            env.pop(key, None)
-        env["NO_COLOR"] = "1"
-        return env
+        return clean_environment()
 
     def run(
         self,
@@ -159,83 +167,19 @@ class CodexAgent:
         run_dir.mkdir(parents=True, exist_ok=True)
         output_path = run_dir / "final.json"
         command = self.build_command(role, worktree, prompt, output_path, session_id)
-        proc = subprocess.Popen(
+        parser = CodexStdoutParser(session_id)
+        outcome = self.supervisor.run(
             command,
-            cwd=str(worktree),
-            env=self.clean_environment(),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=1,
+            Path(worktree),
+            on_event,
+            parser,
+            stderr_event="codex.stderr",
+            stdout_event="codex.stdout",
         )
 
-        lines: "queue.Queue[Tuple[str, Optional[str]]]" = queue.Queue()
-
-        def reader(source: str, stream: Any) -> None:
-            try:
-                for line in iter(stream.readline, ""):
-                    lines.put((source, line.rstrip("\n")))
-            finally:
-                lines.put((source, None))
-
-        stdout_thread = threading.Thread(
-            target=reader, args=("stdout", proc.stdout), daemon=True
-        )
-        stderr_thread = threading.Thread(
-            target=reader, args=("stderr", proc.stderr), daemon=True
-        )
-        stdout_thread.start()
-        stderr_thread.start()
-
-        started = time.monotonic()
-        closed = set()
-        stderr_lines: List[str] = []
-        captured_session = session_id
-        usage: Dict[str, Any] = {}
-        timed_out = False
-
-        while len(closed) < 2 or proc.poll() is None:
-            if time.monotonic() - started > self.timeout_seconds:
-                timed_out = True
-                proc.terminate()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                break
-            try:
-                source, line = lines.get(timeout=0.25)
-            except queue.Empty:
-                continue
-            if line is None:
-                closed.add(source)
-                continue
-            if source == "stderr":
-                stderr_lines.append(line)
-                if len(stderr_lines) > 300:
-                    stderr_lines = stderr_lines[-300:]
-                on_event("codex.stderr", {"line": line})
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                on_event("codex.stdout", {"line": line})
-                continue
-            event_type = event.get("type", "codex.event")
-            if event_type == "thread.started":
-                captured_session = event.get("thread_id") or captured_session
-            if event_type == "turn.completed":
-                usage = event.get("usage") or usage
-            on_event(event_type, event)
-
-        return_code = proc.wait() if proc.poll() is None else int(proc.returncode or 0)
-        stdout_thread.join(timeout=2)
-        stderr_thread.join(timeout=2)
-        if proc.stdout:
-            proc.stdout.close()
-        if proc.stderr:
-            proc.stderr.close()
-        if timed_out:
+        return_code = outcome.return_code
+        stderr_lines = list(outcome.stderr_lines)
+        if outcome.timed_out:
             return_code = 124
             stderr_lines.append("Codex run exceeded the configured timeout")
 
@@ -257,8 +201,8 @@ class CodexAgent:
             exit_code=return_code,
             status=status,
             final=final,
-            session_id=captured_session,
-            usage=usage,
+            session_id=parser.session_id,
+            usage=parser.usage,
             stderr_tail="\n".join(stderr_lines[-300:]),
-            command=self.redacted_command(command),
+            command=redacted_command(command),
         )

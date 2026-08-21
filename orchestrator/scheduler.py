@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from .database import Database, utc_now
 from .git_service import GitError, GitService
-from .models import PreflightResult, TaskStatus
+from .models import PreflightResult, TaskRole, TaskStatus
 from .prompts import build_prompt
 
 
@@ -20,10 +20,12 @@ class TaskScheduler:
         git: GitService,
         agent: Any,
         max_workers: int = 2,
+        cross_review: bool = True,
     ):
         self.db = db
         self.git = git
         self.agent = agent
+        self.cross_review = cross_review
         self.max_workers = max(1, max_workers)
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self._shutdown = threading.Event()
@@ -55,7 +57,7 @@ class TaskScheduler:
             thread.join(timeout=3)
 
     def health(self) -> Dict[str, Any]:
-        return {
+        health = {
             "ready": self._preflight.ok,
             "codex_version": self._preflight.version,
             "auth_status": self._preflight.auth_status,
@@ -63,10 +65,29 @@ class TaskScheduler:
             "workers": self.max_workers,
             "queued": self._queue.qsize(),
         }
+        health.update(self.agent.health())
+        return health
+
+    @property
+    def executor_names(self) -> List[str]:
+        return self.agent.names
+
+    def executor_for(self, task_id: str) -> str:
+        task = self.db.get_task(task_id)
+        if not task:
+            raise RuntimeError("Task not found")
+        project = self.db.get_project(task["project_id"])
+        return self.agent.resolve_name(task, project)
 
     def submit(self, task_id: str) -> bool:
         if not self._preflight.ok:
             raise RuntimeError("; ".join(self._preflight.problems))
+        executor = self.executor_for(task_id)
+        check = self.agent.check(executor)
+        if not check.ok:
+            raise RuntimeError(
+                "Executor %s is unavailable: %s" % (executor, "; ".join(check.problems))
+            )
         if self.db.queue_task(task_id):
             self.db.add_event(task_id, None, "task.queued", {})
             self._queue.put(task_id)
@@ -77,11 +98,24 @@ class TaskScheduler:
         while not self._shutdown.wait(1.5):
             try:
                 self.db.refresh_unblocked_tasks()
+                if not self._preflight.ok:
+                    continue
                 for task_id in self.db.list_auto_startable():
                     try:
                         self.submit(task_id)
-                    except RuntimeError:
-                        return
+                    except RuntimeError as exc:
+                        # One task whose executor is missing must not silently
+                        # stop auto-scheduling for every other task.
+                        message = str(exc)
+                        self.db.update_task(
+                            task_id,
+                            status=TaskStatus.FAILED.value,
+                            queued=False,
+                            error=message,
+                        )
+                        self.db.add_event(
+                            task_id, None, "task.executor_unavailable", {"error": message}
+                        )
             except Exception:
                 # A monitor failure must not stop already running tasks.
                 time.sleep(1)
@@ -118,8 +152,14 @@ class TaskScheduler:
             prompt = build_prompt(task, project, messages, parent)
             self.db.mark_messages_delivered(task_id)
 
+            executor = self.agent.resolve_name(task, project)
             run = self.db.create_run(task_id)
-            self.db.add_event(task_id, run["id"], "run.started", {"role": task["role"]})
+            self.db.add_event(
+                task_id,
+                run["id"],
+                "run.started",
+                {"role": task["role"], "executor": executor},
+            )
 
             def on_event(event_type: str, payload: Dict[str, Any]) -> None:
                 self.db.add_event(task_id, run["id"], event_type, payload)
@@ -131,6 +171,7 @@ class TaskScheduler:
                 prompt=prompt,
                 session_id=task.get("session_id"),
                 on_event=on_event,
+                executor=executor,
             )
             self.db.set_run_command(run["id"], result.command)
             self.db.finish_run(
@@ -157,6 +198,8 @@ class TaskScheduler:
                     "git.changes",
                     snapshot,
                 )
+            self._record_evidence(task_id, result.final)
+            self._reject_reviewer_edits(task, result.final, snapshot, run["id"])
             commit = self.git.commit_changes(
                 str(worktree), task_id, task["title"]
             )
@@ -229,6 +272,48 @@ class TaskScheduler:
         )
         return Path(result["worktree_path"])
 
+    def _record_evidence(self, task_id: str, final: Dict[str, Any]) -> None:
+        """Persist the agent's claimed checks so a human sees them at the gate.
+
+        These are claims, not proof. Storing them is what makes them auditable:
+        an empty list on work that asks for review is itself the signal.
+        """
+        tests = final.get("tests")
+        entries = [str(item).strip() for item in tests if str(item).strip()] if isinstance(tests, list) else []
+        self.db.update_task(task_id, evidence=json.dumps(entries, ensure_ascii=False))
+
+    def _reject_reviewer_edits(
+        self,
+        task: Dict[str, Any],
+        final: Dict[str, Any],
+        snapshot: Dict[str, Any],
+        run_id: str,
+    ) -> None:
+        """An independent reviewer reports; it does not quietly fix.
+
+        Letting a reviewer's edits ride along on the branch destroys the point of
+        the role twice over: the finding never gets stated, and the human reading
+        the diff can no longer tell implementation from review.
+        """
+        if task["role"] != TaskRole.REVIEWER.value:
+            return
+        changed = self.git.tracked_modifications(snapshot.get("status", ""))
+        if not changed:
+            return
+        # Keep the report readable even though the run is about to fail.
+        self.db.update_task(
+            task["id"],
+            summary=str(final.get("summary", "")).strip(),
+            handoff=str(final.get("handoff_notes", "")).strip(),
+        )
+        self.db.add_event(
+            task["id"], run_id, "review.contract_violation", {"files": changed[:50]}
+        )
+        raise RuntimeError(
+            "评审者修改了已跟踪文件，违反独立评审契约，改动未提交：%s"
+            % "、".join(changed[:10])
+        )
+
     def _apply_result(
         self, task: Dict[str, Any], final: Dict[str, Any], run_id: str
     ) -> None:
@@ -287,12 +372,14 @@ class TaskScheduler:
             title = str(proposal.get("title", "")).strip()[:160]
             if not title or title in created:
                 continue
+            role = str(proposal.get("role", "implementer"))
             child = self.db.create_task(
                 project_id=parent["project_id"],
                 parent_id=parent["id"],
                 title=title,
                 description=str(proposal.get("description", ""))[:8000],
-                role=str(proposal.get("role", "implementer")),
+                role=role,
+                executor=self._child_executor(parent, role),
                 status=TaskStatus.BLOCKED.value,
                 requires_approval=bool(proposal.get("requires_approval")),
                 allow_delegation=False,
@@ -314,6 +401,20 @@ class TaskScheduler:
             "tasks.delegated",
             {"children": [{"id": item["id"], "title": title} for title, item in created.items()]},
         )
+
+    def _child_executor(self, parent: Dict[str, Any], role: str) -> str:
+        """Children inherit the parent's executor, except independent reviewers.
+
+        A model reviewing its own output is the weakest link in the whole gate
+        chain, so a reviewer is handed to a different CLI whenever one is ready.
+        """
+        inherited = str(parent.get("executor", ""))
+        if role != TaskRole.REVIEWER.value or not self.cross_review:
+            return inherited
+        current = self.agent.resolve_name(
+            {"executor": inherited}, self.db.get_project(parent["project_id"])
+        )
+        return self.agent.alternate_name(current) or inherited
 
     def _apply_messages(
         self, sender_task: Dict[str, Any], messages: List[Dict[str, Any]]

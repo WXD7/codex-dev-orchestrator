@@ -41,6 +41,15 @@ class GitServiceTests(unittest.TestCase):
         with self.assertRaises(GitError):
             self.git.validate_repository(str(self.repo), "--upload-pack=bad")
 
+    def test_tracked_modifications_ignores_untracked_files(self):
+        status = " M orchestrator/web.py\n?? .pytest_cache/\nA  new_file.py\n?? scratch.log\n"
+        self.assertEqual(
+            GitService.tracked_modifications(status),
+            ["orchestrator/web.py", "new_file.py"],
+        )
+        self.assertEqual(GitService.tracked_modifications(""), [])
+        self.assertEqual(GitService.tracked_modifications("?? only_untracked\n"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
