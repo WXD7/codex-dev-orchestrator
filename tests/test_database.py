@@ -30,6 +30,17 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(changed, [second["id"]])
         self.assertEqual(self.db.get_task(second["id"])["status"], "ready")
 
+    def test_completed_dependency_is_ready_at_creation(self):
+        first = self.db.create_task(self.project["id"], "First")
+        self.db.update_task(first["id"], status="done")
+
+        second = self.db.create_task(
+            self.project["id"], "Second", dependencies=[first["id"]]
+        )
+
+        self.assertEqual(second["status"], "ready")
+        self.assertTrue(self.db.dependencies_complete(second["id"]))
+
     def test_dependency_cycle_is_rejected(self):
         first = self.db.create_task(self.project["id"], "First")
         second = self.db.create_task(

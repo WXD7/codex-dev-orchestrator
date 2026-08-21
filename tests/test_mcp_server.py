@@ -333,6 +333,28 @@ class MCPServerTests(unittest.TestCase):
                 },
             )
 
+    def test_http_start_now_runs_when_declared_dependency_is_already_done(self):
+        dependency = self.db.create_task(
+            self.project["id"], "Approved prerequisite", role="implementer"
+        )
+        self.db.update_task(dependency["id"], status=TaskStatus.DONE.value)
+
+        status, task = self.app.post(
+            "/api/tasks",
+            {
+                "project_id": self.project["id"],
+                "title": "Start after approved prerequisite",
+                "role": "implementer",
+                "dependencies": [dependency["id"]],
+                "start_now": True,
+            },
+        )
+
+        self.assertEqual(status, 201)
+        self.assertEqual(self.scheduler.submitted, [task["id"]])
+        self.assertTrue(task["queued"])
+        self.assertEqual(task["status"], TaskStatus.READY.value)
+
     def test_get_status_groups_tasks_and_surfaces_human_gates(self):
         task = self.db.create_task(
             project_id=self.project["id"], title="Waiting", role="implementer"

@@ -345,9 +345,22 @@ class Database:
                     (task_id, dependency),
                 )
             if dependencies:
+                incomplete = conn.execute(
+                    """
+                    SELECT 1 FROM task_dependencies d
+                    JOIN tasks t ON t.id = d.depends_on
+                    WHERE d.task_id = ? AND t.status <> 'done' LIMIT 1
+                    """,
+                    (task_id,),
+                ).fetchone()
+                dependency_status = (
+                    TaskStatus.BLOCKED.value
+                    if incomplete is not None
+                    else TaskStatus.READY.value
+                )
                 conn.execute(
                     "UPDATE tasks SET status = ? WHERE id = ?",
-                    (TaskStatus.BLOCKED.value, task_id),
+                    (dependency_status, task_id),
                 )
         self.add_event(
             task_id,
