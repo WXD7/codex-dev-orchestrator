@@ -102,7 +102,7 @@ class CodexAgentTests(unittest.TestCase):
             else:
                 os.environ["OPENAI_API_KEY"] = old
 
-    def test_planners_are_read_only_but_reviewers_can_run_tests(self):
+    def test_planners_and_reviewers_are_read_only(self):
         planner = self.agent.build_command(
             "planner", self.root, "plan", self.root / "plan.json"
         )
@@ -110,7 +110,7 @@ class CodexAgentTests(unittest.TestCase):
             "reviewer", self.root, "review", self.root / "review.json"
         )
         self.assertIn("read-only", planner)
-        self.assertIn("workspace-write", reviewer)
+        self.assertIn("read-only", reviewer)
 
     def test_model_override_is_passed_to_new_and_resumed_runs(self):
         fresh = self.agent.build_command(

@@ -9,7 +9,13 @@ from typing import Any, Dict, List, Optional
 
 from .database import Database, utc_now
 from .git_service import GitError, GitService
-from .models import PreflightResult, TaskRole, TaskStatus
+from .models import (
+    PreflightResult,
+    TaskRole,
+    TaskStatus,
+    WRITE_ROLES,
+    normalize_required_artifacts,
+)
 from .prompts import build_prompt
 from .quota import SchedulingDecision
 
@@ -258,6 +264,9 @@ class TaskScheduler:
                 )
             self._record_evidence(task_id, result.final)
             self._reject_reviewer_edits(task, result.final, snapshot, run["id"])
+            self._validate_required_artifacts(
+                task, result.final, worktree, run["id"]
+            )
             commit = self.git.commit_changes(
                 str(worktree), task_id, task["title"]
             )
@@ -372,6 +381,61 @@ class TaskScheduler:
             % "、".join(changed[:10])
         )
 
+    def _validate_required_artifacts(
+        self,
+        task: Dict[str, Any],
+        final: Dict[str, Any],
+        worktree: Path,
+        run_id: str,
+    ) -> None:
+        """Fail closed when a completed task did not deliver its file contract."""
+        if final.get("outcome") != "completed":
+            return
+        required = task.get("required_artifacts") or []
+        if not required:
+            return
+
+        root = Path(worktree).resolve()
+        invalid: List[Dict[str, str]] = []
+        for relative in required:
+            candidate = root / relative
+            try:
+                resolved = candidate.resolve(strict=True)
+            except (FileNotFoundError, OSError):
+                invalid.append({"path": relative, "reason": "missing"})
+                continue
+            if root != resolved and root not in resolved.parents:
+                invalid.append({"path": relative, "reason": "outside_worktree"})
+                continue
+            try:
+                if not resolved.is_file():
+                    invalid.append({"path": relative, "reason": "not_a_file"})
+                elif resolved.stat().st_size <= 0:
+                    invalid.append({"path": relative, "reason": "empty"})
+            except OSError:
+                invalid.append({"path": relative, "reason": "unreadable"})
+
+        if not invalid:
+            self.db.add_event(
+                task["id"],
+                run_id,
+                "artifact.validation_passed",
+                {"required_artifacts": required},
+            )
+            return
+
+        self.db.add_event(
+            task["id"],
+            run_id,
+            "artifact.validation_failed",
+            {"invalid": invalid, "required_artifacts": required},
+        )
+        details = "、".join(
+            "%s（%s）" % (item["path"], item["reason"])
+            for item in invalid[:10]
+        )
+        raise RuntimeError("必需交付文件验收失败：%s" % details)
+
     def _apply_result(
         self, task: Dict[str, Any], final: Dict[str, Any], run_id: str
     ) -> None:
@@ -424,41 +488,189 @@ class TaskScheduler:
     ) -> None:
         if not parent.get("allow_delegation") or not proposals:
             return
-        proposals = proposals[:20]
-        created: Dict[str, Dict[str, Any]] = {}
-        for proposal in proposals:
-            title = str(proposal.get("title", "")).strip()[:160]
-            if not title or title in created:
+        prepared = self._prepare_delegation(proposals[:20])
+        if not prepared:
+            return
+
+        current_parent = self.db.get_task(parent["id"])
+        existing: Dict[str, Dict[str, Any]] = {}
+        ambiguous = set()
+        for summary in (current_parent or {}).get("children", []):
+            child = self.db.get_task(summary["id"])
+            if not child:
                 continue
-            role = str(proposal.get("role", "implementer"))
+            key = self._task_title_key(child["title"])
+            if key in existing:
+                ambiguous.add(key)
+            else:
+                existing[key] = child
+        referenced = {
+            dependency_key
+            for item in prepared
+            for dependency_key in item["dependency_keys"]
+        }
+        proposal_keys = {item["key"] for item in prepared}
+        available = set(existing) | proposal_keys
+        unresolved = sorted(referenced - available)
+        if unresolved:
+            raise ValueError(
+                "委派依赖引用了不存在的任务标题：%s"
+                % "、".join(unresolved)
+            )
+        relevant_ambiguous = sorted(ambiguous & (referenced | proposal_keys))
+        if relevant_ambiguous:
+            raise ValueError(
+                "父任务下已有多个同名子任务，无法安全复用：%s"
+                % "、".join(relevant_ambiguous)
+            )
+
+        resolved = dict(existing)
+        created: List[Dict[str, str]] = []
+        reused: List[Dict[str, str]] = []
+        for item in prepared:
+            child = resolved.get(item["key"])
+            if not child:
+                continue
+            if child["role"] != item["role"]:
+                raise ValueError(
+                    "同名子任务的角色发生变化，拒绝复用：%s" % item["title"]
+                )
+            if child.get("required_artifacts", []) != item["required_artifacts"]:
+                raise ValueError(
+                    "同名子任务的必需产物发生变化，拒绝复用：%s"
+                    % item["title"]
+                )
+            reused.append({"id": child["id"], "title": child["title"]})
+
+        for item in prepared:
+            child = resolved.get(item["key"])
+            if child:
+                continue
             child = self.db.create_task(
                 project_id=parent["project_id"],
                 parent_id=parent["id"],
-                title=title,
-                description=str(proposal.get("description", ""))[:8000],
-                role=role,
-                executor=self._child_executor(parent, role),
+                title=item["title"],
+                description=item["description"],
+                role=item["role"],
+                executor=self._child_executor(parent, item["role"]),
                 status=TaskStatus.BLOCKED.value,
-                requires_approval=bool(proposal.get("requires_approval")),
+                requires_approval=item["requires_approval"],
                 allow_delegation=False,
-                auto_start=bool(proposal.get("auto_start")),
+                auto_start=item["auto_start"],
                 dependencies=[parent["id"]],
+                required_artifacts=item["required_artifacts"],
             )
-            created[title] = child
-        for proposal in proposals:
-            child = created.get(str(proposal.get("title", "")).strip()[:160])
-            if not child:
-                continue
-            for dependency_title in proposal.get("depends_on_titles") or []:
-                dependency = created.get(str(dependency_title).strip()[:160])
-                if dependency and dependency["id"] != child["id"]:
+            resolved[item["key"]] = child
+            created.append({"id": child["id"], "title": child["title"]})
+
+        for item in prepared:
+            child = resolved[item["key"]]
+            for dependency_key in item["dependency_keys"]:
+                dependency = resolved[dependency_key]
+                if dependency["id"] != child["id"]:
                     self.db.add_dependency(child["id"], dependency["id"])
         self.db.add_event(
             parent["id"],
             None,
             "tasks.delegated",
-            {"children": [{"id": item["id"], "title": title} for title, item in created.items()]},
+            {"created": created, "reused": reused},
         )
+
+    @staticmethod
+    def _task_title_key(title: Any) -> str:
+        return " ".join(str(title).strip().split()).casefold()[:160]
+
+    def _prepare_delegation(
+        self, proposals: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Validate the complete proposal batch before creating any task."""
+        prepared: List[Dict[str, Any]] = []
+        seen: Dict[str, str] = {}
+        valid_roles = {item.value for item in TaskRole}
+        for proposal in proposals:
+            if not isinstance(proposal, dict):
+                raise ValueError("proposed_tasks entries must be objects")
+            title = " ".join(str(proposal.get("title", "")).strip().split())[:160]
+            key = self._task_title_key(title)
+            if not key:
+                raise ValueError("委派任务标题不能为空")
+            if key in seen:
+                raise ValueError("同一次委派包含重复任务标题：%s" % title)
+            seen[key] = title
+
+            role = str(proposal.get("role", "")).strip()
+            if role not in valid_roles:
+                raise ValueError("委派任务使用了无效角色：%s" % role)
+            write_files = proposal.get("write_files")
+            if not isinstance(write_files, bool):
+                raise ValueError("委派任务必须明确 write_files：%s" % title)
+            artifacts = normalize_required_artifacts(
+                proposal.get("required_artifacts")
+            )
+            if write_files and role not in WRITE_ROLES:
+                raise ValueError(
+                    "%s 角色为 %s，不能承担写文件任务" % (title, role)
+                )
+            if write_files and not artifacts:
+                raise ValueError("写文件任务必须列出 required_artifacts：%s" % title)
+            if not write_files and artifacts:
+                raise ValueError(
+                    "只读任务不能声明 required_artifacts：%s" % title
+                )
+
+            dependency_titles = proposal.get("depends_on_titles") or []
+            if not isinstance(dependency_titles, list):
+                raise ValueError("depends_on_titles must be an array")
+            dependency_keys: List[str] = []
+            for dependency_title in dependency_titles:
+                dependency_key = self._task_title_key(dependency_title)
+                if not dependency_key:
+                    raise ValueError("依赖任务标题不能为空：%s" % title)
+                if dependency_key == key:
+                    raise ValueError("任务不能依赖自身：%s" % title)
+                if dependency_key not in dependency_keys:
+                    dependency_keys.append(dependency_key)
+            prepared.append(
+                {
+                    "title": title,
+                    "key": key,
+                    "description": str(proposal.get("description", ""))[:8000],
+                    "role": role,
+                    "write_files": write_files,
+                    "required_artifacts": artifacts,
+                    "dependency_keys": dependency_keys,
+                    "requires_approval": bool(
+                        proposal.get("requires_approval", False)
+                    ),
+                    "auto_start": bool(proposal.get("auto_start", False)),
+                }
+            )
+        proposal_keys = {item["key"] for item in prepared}
+        edges = {
+            item["key"]: [
+                dependency
+                for dependency in item["dependency_keys"]
+                if dependency in proposal_keys
+            ]
+            for item in prepared
+        }
+        visiting = set()
+        visited = set()
+
+        def visit(key: str) -> None:
+            if key in visiting:
+                raise ValueError("委派任务依赖形成循环：%s" % seen[key])
+            if key in visited:
+                return
+            visiting.add(key)
+            for dependency in edges[key]:
+                visit(dependency)
+            visiting.remove(key)
+            visited.add(key)
+
+        for key in edges:
+            visit(key)
+        return prepared
 
     def _child_executor(self, parent: Dict[str, Any], role: str) -> str:
         """Children inherit the parent's executor, except independent reviewers.

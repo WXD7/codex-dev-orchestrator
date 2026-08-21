@@ -28,6 +28,11 @@
             "type": "array",
             "items": { "type": "string" }
           },
+          "write_files": { "type": "boolean" },
+          "required_artifacts": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "requires_approval": { "type": "boolean" },
           "auto_start": { "type": "boolean" }
         },
@@ -36,6 +41,8 @@
           "description",
           "role",
           "depends_on_titles",
+          "write_files",
+          "required_artifacts",
           "requires_approval",
           "auto_start"
         ],
@@ -72,4 +79,3 @@
   ],
   "additionalProperties": false
 }
-

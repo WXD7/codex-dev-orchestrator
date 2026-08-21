@@ -38,6 +38,54 @@ class DatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cycle"):
             self.db.add_dependency(first["id"], second["id"])
 
+    def test_required_artifacts_round_trip_as_a_list(self):
+        task = self.db.create_task(
+            self.project["id"],
+            "Deliver files",
+            role="implementer",
+            required_artifacts=["docs/spec.md", "tests/test_spec.py"],
+        )
+        self.assertEqual(
+            task["required_artifacts"],
+            ["docs/spec.md", "tests/test_spec.py"],
+        )
+        listed = next(
+            item for item in self.db.list_tasks(self.project["id"])
+            if item["id"] == task["id"]
+        )
+        self.assertEqual(listed["required_artifacts"], task["required_artifacts"])
+
+    def test_required_artifacts_reject_unsafe_paths(self):
+        unsafe = (
+            "",
+            "/tmp/spec.md",
+            "../spec.md",
+            "docs/../spec.md",
+            "docs//spec.md",
+            "docs\\spec.md",
+            "docs/",
+        )
+        for path in unsafe:
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(ValueError, "required_artifacts"):
+                    self.db.create_task(
+                        self.project["id"],
+                        "Unsafe artifact",
+                        role="implementer",
+                        required_artifacts=[path],
+                    )
+
+    def test_read_only_role_cannot_require_file_artifacts(self):
+        for role in ("coordinator", "planner", "reviewer"):
+            with self.subTest(role=role):
+                with self.assertRaisesRegex(ValueError, "implementer or qa"):
+                    self.db.create_task(
+                        self.project["id"],
+                        "Invalid file owner",
+                        role=role,
+                        required_artifacts=["docs/spec.md"],
+                    )
+
     def test_agent_reported_block_is_not_treated_as_dependency_block(self):
         task = self.db.create_task(self.project["id"], "Needs external access")
         self.db.update_task(task["id"], status="blocked", error="Network unavailable")

@@ -70,6 +70,7 @@ TASK_SUMMARY_FIELDS = (
     "error",
     "approval_question",
     "evidence",
+    "required_artifacts",
 )
 
 TASK_DETAIL_FIELDS = TASK_SUMMARY_FIELDS + (
@@ -392,6 +393,9 @@ def tool_create_task(client: OrchestratorClient, args: Dict[str, Any]) -> Dict[s
     dependencies = args.get("dependencies") or []
     if not isinstance(dependencies, list):
         raise ToolError("dependencies must be an array of task ids.")
+    required_artifacts = args.get("required_artifacts") or []
+    if not isinstance(required_artifacts, list):
+        raise ToolError("required_artifacts must be an array of relative file paths.")
     task = client.request(
         "POST",
         "/api/tasks",
@@ -406,6 +410,7 @@ def tool_create_task(client: OrchestratorClient, args: Dict[str, Any]) -> Dict[s
             "requires_approval": bool(args.get("requires_approval", False)),
             "auto_start": bool(args.get("auto_start", False)),
             "dependencies": [str(item) for item in dependencies],
+            "required_artifacts": required_artifacts,
             "start_now": False,
         },
     )
@@ -563,7 +568,7 @@ TOOLS: List[Dict[str, Any]] = [
                 "role": {
                     "type": "string",
                     "enum": list(TASK_ROLES),
-                    "description": "coordinator/planner run read-only; implementer/reviewer/qa get a writable worktree.",
+                    "description": "coordinator/planner/reviewer are read-only; implementer/qa may write files.",
                 },
                 "executor": _EXECUTOR_PROP,
                 "parent_id": _TASK_ID_PROP,
@@ -573,6 +578,11 @@ TOOLS: List[Dict[str, Any]] = [
                     "description": "Task ids that must reach done before this one becomes ready.",
                 },
                 "priority": {"type": "integer"},
+                "required_artifacts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Non-empty repository-relative files required before completion; only valid for implementer/qa.",
+                },
                 "requires_approval": {
                     "type": "boolean",
                     "description": "Hold the task for human approval before marking it done.",

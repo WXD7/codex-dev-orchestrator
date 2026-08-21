@@ -110,6 +110,9 @@ class Application:
             dependencies = body.get("dependencies") or []
             if not isinstance(dependencies, list):
                 raise ApiError(400, "dependencies 必须是数组")
+            required_artifacts = body.get("required_artifacts") or []
+            if not isinstance(required_artifacts, list):
+                raise ApiError(400, "required_artifacts 必须是数组")
             try:
                 task = self.db.create_task(
                     project_id=project_id,
@@ -124,6 +127,7 @@ class Application:
                     allow_delegation=bool(body.get("allow_delegation", False)),
                     auto_start=bool(body.get("auto_start", False)),
                     dependencies=[str(item) for item in dependencies],
+                    required_artifacts=required_artifacts,
                 )
             except ValueError as exc:
                 raise ApiError(400, str(exc)) from exc

@@ -277,8 +277,14 @@ class MCPServerTests(unittest.TestCase):
     def test_create_task_add_dependency_and_cycle_rejection(self):
         first = self.call_ok(
             "create_task",
-            {"project_id": self.project["id"], "title": "Implement", "role": "implementer"},
+            {
+                "project_id": self.project["id"],
+                "title": "Implement",
+                "role": "implementer",
+                "required_artifacts": ["src/version.py"],
+            },
         )["task"]
+        self.assertEqual(first["required_artifacts"], ["src/version.py"])
         second = self.call_ok(
             "create_task",
             {
@@ -314,6 +320,18 @@ class MCPServerTests(unittest.TestCase):
             "orchestrator id",
             self.call_err("get_diff", {"task_id": "../../secret"}),
         )
+
+    def test_http_create_rejects_required_artifacts_for_read_only_role(self):
+        with self.assertRaisesRegex(Exception, "implementer or qa"):
+            self.app.post(
+                "/api/tasks",
+                {
+                    "project_id": self.project["id"],
+                    "title": "Planner cannot write",
+                    "role": "planner",
+                    "required_artifacts": ["docs/spec.md"],
+                },
+            )
 
     def test_get_status_groups_tasks_and_surfaces_human_gates(self):
         task = self.db.create_task(

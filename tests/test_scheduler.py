@@ -36,6 +36,8 @@ class FakeAgent:
                     "description": "Implement the accepted plan",
                     "role": "implementer",
                     "depends_on_titles": [],
+                    "write_files": True,
+                    "required_artifacts": ["src/feature.py"],
                     "requires_approval": False,
                     "auto_start": False,
                 }
@@ -73,6 +75,63 @@ class NewFileReviewer(FakeAgent):
         (Path(worktree) / "reviewer_added.py").write_text(
             "print('review edit')\n", encoding="utf-8"
         )
+        result = super().run(run_id, role, worktree, prompt, session_id, on_event)
+        result.final["proposed_tasks"] = []
+        return result
+
+
+class ApprovalResumeAgent(FakeAgent):
+    def __init__(self):
+        self.session_ids = []
+
+    @staticmethod
+    def proposal(title, dependencies=()):
+        return {
+            "title": title,
+            "description": "Deliver %s" % title,
+            "role": "implementer",
+            "depends_on_titles": list(dependencies),
+            "write_files": True,
+            "required_artifacts": ["deliverables/%s.md" % title.lower().replace(" ", "-")],
+            "requires_approval": False,
+            "auto_start": False,
+        }
+
+    def run(self, run_id, role, worktree, prompt, session_id, on_event):
+        self.session_ids.append(session_id)
+        first = len(self.session_ids) == 1
+        proposals = [self.proposal("Implement child")]
+        if not first:
+            proposals.append(self.proposal("Verify child", ["Implement child"]))
+        return AgentRunResult(
+            0,
+            "complete",
+            {
+                "outcome": "needs_approval" if first else "completed",
+                "summary": "Approve the plan" if first else "Plan complete",
+                "handoff_notes": "",
+                "tests": [],
+                "proposed_tasks": proposals,
+                "messages": [],
+                "recommended_stage": "waiting_approval" if first else "done",
+                "approval_question": "Approve?" if first else "",
+            },
+            "resumable-session",
+            {},
+            "",
+            ["fake"],
+        )
+
+
+class ArtifactAgent(FakeAgent):
+    def __init__(self, create_artifact):
+        self.create_artifact = create_artifact
+
+    def run(self, run_id, role, worktree, prompt, session_id, on_event):
+        if self.create_artifact:
+            path = Path(worktree) / "deliverables" / "spec.md"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("verified deliverable\n", encoding="utf-8")
         result = super().run(run_id, role, worktree, prompt, session_id, on_event)
         result.final["proposed_tasks"] = []
         return result
@@ -152,6 +211,142 @@ class SchedulerTests(unittest.TestCase):
         self.scheduler.resolve_approval(parent["id"], True, "Approved")
         self.assertEqual(self.db.get_task(parent["id"])["status"], "done")
         self.assertEqual(self.db.get_task(child["id"])["status"], "ready")
+
+    def test_approval_resume_reuses_children_and_resolves_new_dependencies(self):
+        self.scheduler.stop()
+        agent = ApprovalResumeAgent()
+        scheduler = TaskScheduler(
+            self.db,
+            self.git,
+            AgentRegistry([agent], "fake"),
+            max_workers=1,
+        )
+        scheduler.start()
+        try:
+            parent = self.db.create_task(
+                self.project["id"],
+                "Plan with resume",
+                role="coordinator",
+                allow_delegation=True,
+            )
+            scheduler.submit(parent["id"])
+            waiting = self.wait_for(parent["id"], "waiting_approval")
+            self.assertEqual(len(waiting["children"]), 1)
+            original_id = waiting["children"][0]["id"]
+
+            scheduler.resolve_approval(parent["id"], True, "Approved")
+            self.wait_for(parent["id"], "done")
+            children = {
+                child["title"]: self.db.get_task(child["id"])
+                for child in self.db.get_task(parent["id"])["children"]
+            }
+            self.assertEqual(set(children), {"Implement child", "Verify child"})
+            self.assertEqual(children["Implement child"]["id"], original_id)
+            self.assertEqual(
+                {item["id"] for item in children["Verify child"]["dependencies"]},
+                {parent["id"], original_id},
+            )
+            delegated = [
+                event for event in self.db.list_events(parent["id"])
+                if event["type"] == "tasks.delegated"
+            ]
+            self.assertEqual(len(delegated), 2)
+            self.assertEqual(len(delegated[1]["payload"]["created"]), 1)
+            self.assertEqual(len(delegated[1]["payload"]["reused"]), 1)
+            self.assertEqual(agent.session_ids, [None, "resumable-session"])
+        finally:
+            scheduler.stop()
+
+    def test_duplicate_delegation_titles_fail_before_any_child_is_created(self):
+        parent = self.db.create_task(
+            self.project["id"],
+            "Reject duplicates",
+            role="coordinator",
+            allow_delegation=True,
+        )
+        proposals = [
+            ApprovalResumeAgent.proposal("Same child"),
+            ApprovalResumeAgent.proposal("  SAME   child "),
+        ]
+        with self.assertRaisesRegex(ValueError, "重复任务标题"):
+            self.scheduler._apply_delegation(parent, proposals)
+        self.assertEqual(self.db.get_task(parent["id"])["children"], [])
+
+    def test_role_write_contract_fails_before_any_child_is_created(self):
+        parent = self.db.create_task(
+            self.project["id"],
+            "Reject role mismatch",
+            role="coordinator",
+            allow_delegation=True,
+        )
+        valid = ApprovalResumeAgent.proposal("Valid child")
+        invalid = {
+            "title": "Planner writes spec",
+            "description": "Create a specification file",
+            "role": "planner",
+            "depends_on_titles": [],
+            "write_files": True,
+            "required_artifacts": ["docs/spec.md"],
+            "requires_approval": False,
+            "auto_start": False,
+        }
+        with self.assertRaisesRegex(ValueError, "不能承担写文件任务"):
+            self.scheduler._apply_delegation(parent, [valid, invalid])
+        self.assertEqual(self.db.get_task(parent["id"])["children"], [])
+
+    def test_completed_task_missing_required_artifact_fails_closed(self):
+        self.scheduler.stop()
+        scheduler = TaskScheduler(
+            self.db,
+            self.git,
+            AgentRegistry([ArtifactAgent(False)], "fake"),
+            max_workers=1,
+        )
+        scheduler.start()
+        try:
+            task = self.db.create_task(
+                self.project["id"],
+                "Deliver a spec",
+                role="implementer",
+                required_artifacts=["deliverables/spec.md"],
+            )
+            scheduler.submit(task["id"])
+            failed = self.wait_for(task["id"], "failed")
+            self.assertIn("必需交付文件验收失败", failed["error"])
+            self.assertIn("deliverables/spec.md", failed["error"])
+            event_types = [
+                event["type"] for event in self.db.list_events(task["id"])
+            ]
+            self.assertIn("artifact.validation_failed", event_types)
+            self.assertNotIn("task.completed", event_types)
+        finally:
+            scheduler.stop()
+
+    def test_completed_task_with_nonempty_required_artifact_can_finish(self):
+        self.scheduler.stop()
+        scheduler = TaskScheduler(
+            self.db,
+            self.git,
+            AgentRegistry([ArtifactAgent(True)], "fake"),
+            max_workers=1,
+        )
+        scheduler.start()
+        try:
+            task = self.db.create_task(
+                self.project["id"],
+                "Deliver a real spec",
+                role="implementer",
+                required_artifacts=["deliverables/spec.md"],
+            )
+            scheduler.submit(task["id"])
+            done = self.wait_for(task["id"], "done")
+            self.assertEqual(done["status"], "done")
+            event_types = [
+                event["type"] for event in self.db.list_events(task["id"])
+            ]
+            self.assertIn("artifact.validation_passed", event_types)
+        finally:
+            scheduler.stop()
 
     def test_monitor_does_not_repeat_an_agent_reported_block(self):
         task = self.db.create_task(self.project["id"], "Needs external service")

@@ -177,6 +177,7 @@ function taskCard(task) {
   const flags = [
     task.allow_delegation ? '<span class="tiny-flag" title="可委派子任务">↳</span>' : "",
     task.requires_approval ? '<span class="tiny-flag" title="需要人工批准">✓</span>' : "",
+    (task.required_artifacts || []).length ? `<span class="tiny-flag" title="必须交付 ${(task.required_artifacts || []).length} 个文件">▣</span>` : "",
     task.worktree_path ? '<span class="tiny-flag" title="已有独立 worktree">⑂</span>' : "",
   ].join("");
   const body = task.summary || task.description || "尚无说明";
@@ -232,6 +233,9 @@ function renderTaskDetail(task) {
   const ranChecks = evidence.length
     ? `<ul class="evidence-list">${evidence.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
     : `<div class="evidence-empty">Agent 没有报告任何检查。批准前请自行确认。</div>`;
+  const requiredArtifacts = (task.required_artifacts || []).length
+    ? `<ul class="evidence-list">${task.required_artifacts.map((item) => `<li><code>${escapeHtml(item)}</code></li>`).join("")}</ul>`
+    : '<div class="evidence-empty">此任务未声明必须交付的文件。</div>';
   const severityLabels = { error: "错误", warning: "警告", info: "提示" };
   const alerts = (task.alerts || []).length
     ? (task.alerts || []).map((alert) => `
@@ -259,6 +263,7 @@ function renderTaskDetail(task) {
     <div class="task-actions">${actions}</div>
     <section class="detail-section"><h3>运行异常与警告</h3><div class="runtime-alert-list">${alerts}</div></section>
     <section class="detail-section"><h3>目标与边界</h3><div class="detail-text">${escapeHtml(task.description || "未填写")}</div></section>
+    <section class="detail-section"><h3>必需产物（系统验收）</h3>${requiredArtifacts}</section>
     <section class="detail-section"><h3>Agent 摘要</h3><div class="detail-text">${escapeHtml(task.summary || "Agent 尚未提交摘要。")}</div></section>
     <section class="detail-section"><h3>检查证据（Agent 自报）</h3>${ranChecks}</section>
     <section class="detail-section"><h3>交接说明</h3><div class="detail-text">${escapeHtml(task.handoff || "暂无交接信息。")}</div></section>
@@ -405,6 +410,7 @@ $("#task-form").addEventListener("submit", async (event) => {
   const data = Object.fromEntries(formData);
   data.project_id = state.currentProject.id;
   data.dependencies = formData.getAll("dependencies");
+  data.required_artifacts = String(data.required_artifacts || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
   ["requires_approval", "allow_delegation", "auto_start", "start_now"].forEach((key) => { data[key] = form.elements[key].checked; });
   data.priority = Number(data.priority);
   try {

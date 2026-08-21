@@ -209,6 +209,11 @@ class ClaudeAgentTests(unittest.TestCase):
         self.assertEqual(allowed, ["Read", "Grep", "Glob"])
         self.assertNotIn("--permission-mode", planner)
 
+        reviewer = self.agent.build_command("reviewer", self.root, "review")
+        allowed = reviewer[reviewer.index("--allowedTools") + 1].split(",")
+        self.assertEqual(allowed, ["Read", "Grep", "Glob"])
+        self.assertNotIn("--permission-mode", reviewer)
+
         implementer = self.agent.build_command("implementer", self.root, "build")
         allowed = implementer[implementer.index("--allowedTools") + 1].split(",")
         self.assertIn("Edit", allowed)

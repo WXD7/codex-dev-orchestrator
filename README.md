@@ -11,7 +11,9 @@
 - 中文 AI Kanban：待处理、可执行、执行中、等待确认、评审、阻塞、失败和完成；
 - 多角色工作流：技术协调者、方案规划者、实现工程师、独立评审者和质量验证者；
 - 父子任务、显式依赖、循环依赖检查和完成后的自动解锁；
-- 协调 Agent 可提出最多 20 个子任务及其依赖；
+- 协调 Agent 可提出最多 20 个子任务及其依赖；审批恢复时按“同一父任务 + 规范化标题”复用旧任务，不重复建卡；
+- 子任务必须明确是否写文件；协调、规划和评审只读，文件交付必须交给实现或 QA 并列出预期路径；
+- 可为实现/QA 任务声明“必须交付的文件”；Agent 报完成后系统逐项确认文件存在且非空，验收失败不会释放下游；
 - 异构执行器：同一个任务图里，实现可以走 Codex，独立评审可以走 Claude Code；
 - 额度感知调度：读取登录账号的剩余比例和刷新时间，在执行器与高/中/经济模型之间自动分配；
 - 每个任务使用独立 Git worktree 和 `agent/...` 本地分支；
@@ -71,7 +73,7 @@ python3 run.py serve --open
 2. 新建一个“技术协调者”任务，描述完整目标；
 3. 勾选“允许拆分子任务”和“需要人工批准”；
 4. 先保持手动调度，并勾选“立即启动”；
-5. 协调 Agent 会只读分析仓库，提出实现、评审和 QA 子任务；
+5. 协调 Agent 会只读分析仓库，提出实现、评审和 QA 子任务，并为文件型任务声明必需产物；
 6. 在“等待确认”栏审核方案。批准后，下游第一个任务进入“可执行”；
 7. 逐项启动或为项目开启自动调度；
 8. 在任务详情中查看摘要、交接、对话、运行记录和完整 Diff；
@@ -205,8 +207,8 @@ ORCH_EXECUTORS="codex,claude-code" python3 run.py serve
 
 | | Codex CLI | Claude Code CLI |
 | --- | --- | --- |
-| 只读角色（协调、规划） | `--sandbox read-only` | 工具白名单只有 `Read,Grep,Glob`，并要求原生 Bash sandbox 可用 |
-| 写入角色（实现、评审、QA） | `--sandbox workspace-write` | 白名单加上 `Edit,Write,Bash` 等，Bash 仍在原生 sandbox 内运行 |
+| 只读角色（协调、规划、评审） | `--sandbox read-only` | 工具白名单只有 `Read,Grep,Glob`，并要求原生 Bash sandbox 可用 |
+| 写入角色（实现、QA） | `--sandbox workspace-write` | 白名单加上 `Edit,Write,Bash` 等，Bash 仍在原生 sandbox 内运行 |
 | 工作目录 | `--cd <worktree>` | 进程 cwd 固定为该任务 worktree |
 | 结构化结果 | CLI 原生 `--output-schema` | CLI 原生 `--json-schema`，结果从 `structured_output` 读取 |
 | 网络与发布 | 沙箱限制网络 | 原生 sandbox 禁止本机回环访问和本地端口监听；工具策略另拒绝 Web 工具及 Git 发布操作 |
@@ -241,9 +243,9 @@ ORCH_EXECUTORS="codex,claude-code" python3 run.py doctor
 
 - 只接受本机已经登录的执行器 CLI；
 - 不提供任何模型 API 调用代码，也不向子进程传递常见 API Key（OpenAI 与 Anthropic 两侧都剥离）；
-- 规划和协调角色使用只读沙箱；
-- 实现、评审和 QA 可以写，但工作目录限定为该任务的独立 worktree；Claude 的 Bash 还要求原生 OS sandbox 成功启动，并禁止访问本机控制面；
-- 评审角色可以运行测试，但只要工作树出现已跟踪修改或未跟踪新文件，编排器就记录契约违规、拒绝提交并让任务失败；
+- 规划、协调和评审角色使用只读沙箱；
+- 实现和 QA 可以写，但工作目录限定为该任务的独立 worktree；Claude 的 Bash 还要求原生 OS sandbox 成功启动，并禁止访问本机控制面；
+- 评审角色只报告发现，不修复文件；即使某个执行器越过只读约束产生改动，编排器仍会记录契约违规、拒绝提交并让任务失败；
 - Agent 提示明确禁止 push、merge、删分支、发布、部署和联系外部人员；
 - Git 服务只创建 worktree、本地分支、本地提交，并可在下游 worktree 中整合依赖分支；
 - 架构、安全策略、破坏性迁移、含糊产品决定和最终合并应保留人工确认；

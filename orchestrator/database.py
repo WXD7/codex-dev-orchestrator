@@ -9,13 +9,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
-from .models import TaskStatus
+from .models import TaskStatus, WRITE_ROLES, normalize_required_artifacts
 
 
 ALERT_EVENT_SEVERITY = {
     "run.failed": "error",
     "task.executor_unavailable": "error",
     "review.contract_violation": "error",
+    "artifact.validation_failed": "error",
     "task.blocked": "warning",
     "task.quota_deferred": "warning",
     "codex.stderr": "warning",
@@ -96,6 +97,7 @@ class Database:
                     summary TEXT NOT NULL DEFAULT '',
                     handoff TEXT NOT NULL DEFAULT '',
                     evidence TEXT NOT NULL DEFAULT '',
+                    required_artifacts TEXT NOT NULL DEFAULT '[]',
                     error TEXT NOT NULL DEFAULT '',
                     approval_question TEXT NOT NULL DEFAULT '',
                     requires_approval INTEGER NOT NULL DEFAULT 0,
@@ -189,6 +191,7 @@ class Database:
                 ("tasks", "assigned_executor"),
                 ("tasks", "assigned_model"),
                 ("tasks", "evidence"),
+                ("tasks", "required_artifacts"),
                 ("projects", "default_executor"),
             ):
                 existing = {
@@ -196,9 +199,10 @@ class Database:
                     for row in conn.execute("PRAGMA table_info(%s)" % table).fetchall()
                 }
                 if column not in existing:
+                    default = "'[]'" if column == "required_artifacts" else "''"
                     conn.execute(
-                        "ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''"
-                        % (table, column)
+                        "ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT %s"
+                        % (table, column, default)
                     )
 
     @staticmethod
@@ -214,6 +218,13 @@ class Database:
         ):
             if key in item:
                 item[key] = bool(item[key])
+        if "required_artifacts" in item:
+            try:
+                item["required_artifacts"] = normalize_required_artifacts(
+                    json.loads(item["required_artifacts"] or "[]")
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ValueError("Stored required_artifacts are invalid") from exc
         return item
 
     def create_project(
@@ -285,9 +296,15 @@ class Database:
         allow_delegation: bool = False,
         auto_start: bool = False,
         dependencies: Sequence[str] = (),
+        required_artifacts: Sequence[str] = (),
     ) -> Dict[str, Any]:
         task_id = new_id("tsk")
         now = utc_now()
+        artifacts = normalize_required_artifacts(required_artifacts)
+        if artifacts and role not in WRITE_ROLES:
+            raise ValueError(
+                "Only implementer or qa tasks may require file artifacts"
+            )
         if not self.get_project(project_id):
             raise ValueError("Project not found")
         if parent_id:
@@ -300,8 +317,8 @@ class Database:
                 INSERT INTO tasks (
                     id, project_id, parent_id, title, description, role, executor,
                     status, priority, requires_approval, allow_delegation, auto_start,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    required_artifacts, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -316,6 +333,7 @@ class Database:
                     int(requires_approval),
                     int(allow_delegation),
                     int(auto_start),
+                    json.dumps(artifacts, ensure_ascii=False),
                     now,
                     now,
                 ),
@@ -335,7 +353,12 @@ class Database:
             task_id,
             None,
             "task.created",
-            {"title": title, "role": role, "executor": executor.strip()},
+            {
+                "title": title,
+                "role": role,
+                "executor": executor.strip(),
+                "required_artifacts": artifacts,
+            },
         )
         return self.get_task(task_id)  # type: ignore[return-value]
 
@@ -440,6 +463,7 @@ class Database:
             "summary",
             "handoff",
             "evidence",
+            "required_artifacts",
             "error",
             "approval_question",
             "queued",
@@ -454,6 +478,18 @@ class Database:
                 raise ValueError("Task not found")
             return task
         updates["updated_at"] = utc_now()
+        if "required_artifacts" in updates:
+            task = self.get_task(task_id)
+            if not task:
+                raise ValueError("Task not found")
+            artifacts = normalize_required_artifacts(updates["required_artifacts"])
+            if artifacts and task["role"] not in WRITE_ROLES:
+                raise ValueError(
+                    "Only implementer or qa tasks may require file artifacts"
+                )
+            updates["required_artifacts"] = json.dumps(
+                artifacts, ensure_ascii=False
+            )
         bool_fields = {"queued", "auto_start"}
         for key in bool_fields:
             if key in updates:
