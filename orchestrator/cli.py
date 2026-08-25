@@ -51,7 +51,55 @@ def parser() -> argparse.ArgumentParser:
     )
     mcp.add_argument("--url", help="Orchestrator base URL (default: configured host/port)")
     mcp.add_argument("--timeout", type=float, default=30.0)
+    governance = sub.add_parser(
+        "governance",
+        help="Compile contracts, route verification, and adjudicate evidence without running an agent",
+    )
+    governance_sub = governance.add_subparsers(dest="governance_command", required=True)
+    for name, help_text in (
+        ("compile", "Compile a raw work contract"),
+        ("route", "Build a risk-selected verification plan from a compiled contract"),
+        ("contexts", "Build isolated inspector context packets"),
+        ("handoff", "Build a side-effect-free Kandev/Codex execution manifest"),
+        ("adjudicate", "Adjudicate deterministic results and semantic findings"),
+    ):
+        item = governance_sub.add_parser(name, help=help_text)
+        item.add_argument("--input", default="-", help="JSON file, or - for stdin")
+        item.add_argument("--output", default="-", help="JSON file, or - for stdout")
+    governance_sub.add_parser(
+        "blueprint", help="Show ownership boundaries for the mature external components"
+    )
+    init = governance_sub.add_parser(
+        "init", help="Create a versioned .ai-delivery policy bundle in an existing Git repository"
+    )
+    init.add_argument("--target", required=True)
+    init.add_argument("--input", default="-", help="Raw contract JSON file, or - for stdin")
+    init.add_argument("--output", default="-", help="Result JSON file, or - for stdout")
+    sub.add_parser(
+        "governance-mcp",
+        help="Expose pure delivery-governance tools over stdio without a database or HTTP service",
+    )
     return result
+
+
+def _read_json_input(path: str) -> dict:
+    raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("input JSON must be an object")
+    return value
+
+
+def _write_json_output(path: str, value) -> None:
+    rendered = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    if path == "-":
+        sys.stdout.write(rendered)
+        return
+    output = Path(path)
+    if output.exists():
+        raise FileExistsError("Refusing to overwrite existing output: %s" % output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(rendered, encoding="utf-8")
 
 
 def main(argv=None) -> int:
@@ -102,6 +150,42 @@ def main(argv=None) -> int:
         if getattr(args, "timeout", None):
             argv_mcp += ["--timeout", str(args.timeout)]
         return mcp_server.main(argv_mcp)
+    if command == "governance-mcp":
+        from . import governance_mcp
+
+        return governance_mcp.main([])
+    if command == "governance":
+        from .delivery_bundle import scaffold_project
+        from .governance import GovernanceEngine, integration_blueprint
+
+        engine = GovernanceEngine()
+        operation = args.governance_command
+        if operation == "blueprint":
+            _write_json_output("-", integration_blueprint())
+            return 0
+        source = _read_json_input(args.input)
+        if operation == "compile":
+            result = engine.compile_contract(source)
+        elif operation == "route":
+            result = engine.route(source)
+        elif operation == "contexts":
+            result = {
+                "contexts": engine.context_packets(
+                    source.get("contract") or {}, source.get("plan") or {}
+                )
+            }
+        elif operation == "handoff":
+            result = engine.delivery_handoff(
+                source.get("contract") or {}, source.get("plan") or {}
+            )
+        elif operation == "adjudicate":
+            result = engine.adjudicate(source)
+        elif operation == "init":
+            result = scaffold_project(Path(args.target), source)
+        else:
+            return 2
+        _write_json_output(args.output, result)
+        return 0
     if command == "doctor":
         _db, _git, agents, _scheduler = build_runtime(config)
         result = agents.preflight()
@@ -127,4 +211,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

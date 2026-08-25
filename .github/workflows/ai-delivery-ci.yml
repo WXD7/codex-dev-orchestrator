@@ -1,0 +1,36 @@
+name: AI delivery deterministic CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Reject whitespace errors
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}"
+          elif [[ "${{ github.event_name }}" == "push" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --check "${{ github.event.before }}" "${{ github.sha }}"
+          else
+            git show --check --format= HEAD
+          fi
+      - name: Compile Python sources
+        run: python -m compileall -q orchestrator tests run.py
+      - name: Run deterministic tests
+        run: python -m unittest discover -s tests -v

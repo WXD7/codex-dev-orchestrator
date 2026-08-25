@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -314,7 +315,7 @@ class ClaudeAgentTests(unittest.TestCase):
                     "rate_limit_type": "five_hour",
                     "status": "allowed_warning",
                     "utilization": 0.8,
-                    "resets_at": 1787330000,
+                    "resets_at": int(time.time()) + 5 * 60 * 60,
                 }
             ),
         )

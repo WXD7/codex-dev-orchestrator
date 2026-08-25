@@ -235,13 +235,14 @@ for line in sys.stdin:
 
 class ClaudeQuotaTests(unittest.TestCase):
     def test_rate_limit_events_merge_and_persist_without_credentials(self):
+        now = int(time.time())
         first = merge_claude_rate_limit(
             QuotaSnapshot.unknown("claude-code"),
             {
                 "rate_limit_type": "five_hour",
                 "status": "allowed_warning",
                 "utilization": 0.82,
-                "resets_at": 1787330000,
+                "resets_at": now + 5 * 60 * 60,
             },
         )
         second = merge_claude_rate_limit(
@@ -250,7 +251,7 @@ class ClaudeQuotaTests(unittest.TestCase):
                 "rate_limit_type": "seven_day",
                 "status": "allowed",
                 "utilization": 0.35,
-                "resets_at": 1787900000,
+                "resets_at": now + 7 * 24 * 60 * 60,
             },
         )
         self.assertEqual(len(second.windows), 2)

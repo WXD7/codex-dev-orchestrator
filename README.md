@@ -1,10 +1,115 @@
-# Codex Dev Orchestrator
+# AI Delivery Governance
 
-一个完全在本机运行的 AI 研发编排台。它把研发目标拆成有依赖关系的任务，让多个执行单元分别承担规划、实现、独立评审和 QA，并在关键节点等待人工拍板。
+这条分支把原来的“自研多 Agent 看板”重构为一层薄而确定的 AI 交付治理能力。它不再复制成熟产品已经做好的 UI、任务、worktree、会话和 CI，而是把真正缺失的部分做成可复用协议：
 
-执行端可以是 Codex CLI，也可以是 Claude Code CLI，按任务选择。无论用哪个，工程保证都由编排器持有：独立 worktree、按角色收紧的写权限、剥离 API Key 的环境、统一的结构化结果契约。
+- 把 Spec Kit 或人类确认过的需求编译成不可静默漂移的工作契约；
+- 根据风险决定保持单一 Codex 上下文，还是开启哪些独立监察通道；
+- 为每个监察通道生成最小、只读、彼此隔离的上下文；
+- 过滤低置信、不可复现、非本次引入和重复问题；
+- 把有效问题汇总成一次返修包，交回原开发上下文；
+- 第二次仍不收敛、存在争议或即将产生外部/不可逆效果时交给人；
+- 通过无状态 MCP 同时服务 LobeHub、Kandev、Symphony 和 Codex。
 
-它不调用任何模型 API，也不读取或转发 API Key。执行端直接调用本机已经登录的 CLI，用的是订阅访问能力。
+它不调用模型 API，不接受 API Key，也不持有任务、审批、分支或 Agent 会话。
+
+## 组合架构
+
+| 成熟组件 | 在系统中的职责 |
+| --- | --- |
+| LobeHub | 人类入口、项目与任务、对话、审批、记忆和日报 |
+| Kandev | 研发工作台、Agent CLI、worktree、Diff、代码审查和交接 |
+| OpenAI Symphony | 长时间工单调度、重试、协调、恢复和 `WORKFLOW.md` 语义 |
+| GitHub Spec Kit | 项目宪法、需求澄清、规格、技术计划和任务分解 |
+| GitHub Actions / gh-aw | 确定性 CI、仓库事件、权限隔离和安全输出 |
+| Codex CLI/app-server | 使用本机已登录订阅的主要执行端 |
+| 本仓库 | 契约、风险路由、上下文隔离协议、证据裁决和集成边界 |
+
+默认执行路径是：
+
+```text
+LobeHub 接收目标和人类决定
+  → Spec Kit 澄清并形成规格
+  → 本治理层编译契约和风险计划
+  → Kandev 或 Symphony 驱动本地 Codex
+  → 确定性 CI 先运行
+  → 只开启风险需要的独立监察上下文
+  → 本治理层裁决证据并生成一次返修包
+  → 全量复验
+  → 人决定最终合并或发布
+```
+
+## 快速体验治理内核
+
+编译工作契约：
+
+```bash
+python3 run.py governance compile --input examples/legal-billing-contract-source.json \
+  --output /tmp/legal-billing-contract.json
+```
+
+选择检测通道：
+
+```bash
+python3 run.py governance route --input /tmp/legal-billing-contract.json \
+  --output /tmp/legal-billing-verification.json
+```
+
+把契约和计划编译成 Kandev/Codex 可消费、但尚未执行任何外部写操作的交接清单：
+
+```bash
+python3 run.py governance handoff --input contract-and-plan.json \
+  --output /tmp/legal-billing-handoff.json
+```
+
+生成一个可提交到目标仓库的治理包：
+
+```bash
+python3 run.py governance init \
+  --target /absolute/path/to/a/git/repository \
+  --input examples/legal-billing-contract-source.json
+```
+
+该命令只创建 `.ai-delivery/`，且拒绝覆盖已有文件。里面包含契约、验证计划、Kandev/Codex 交接清单、Kandev 运行手册、项目宪法、集成边界和可纳入真实 Symphony `WORKFLOW.md` 的策略片段。
+
+## 接入 LobeHub 或 Kandev
+
+启动无状态治理 MCP：
+
+```bash
+python3 run.py governance-mcp
+```
+
+MCP 暴露六个纯计算工具：
+
+| 工具 | 作用 |
+| --- | --- |
+| `compile_work_contract` | 契约编译、追问缺口、风险信号 |
+| `plan_delivery` | 动态选择确定性和语义监察通道 |
+| `build_inspector_contexts` | 生成最小只读隔离上下文 |
+| `build_delivery_handoff` | 生成 owner、监察任务、Profile 边界、顺序和人类闸门的 Kandev/Codex 清单 |
+| `adjudicate_delivery` | 去重、过滤、阻塞判断和一次返修包 |
+| `get_integration_blueprint` | 返回各成熟组件的所有权边界 |
+
+这组工具不能运行 Agent、修改任务、批准、写代码、push、合并或部署。LobeHub 继续持有人类界面，Kandev 继续持有研发任务和 worktree。
+
+项目级 Codex Skill 位于 `.agents/skills/ai-delivery-governance/`，把契约、验证和证据裁决规则带入兼容 Agent。
+
+详细说明见：
+
+- [新架构](docs/ARCHITECTURE.md)
+- [产品与质量需求](docs/AI_NATIVE_DELIVERY_REQUIREMENTS.md)
+- [成熟组件集成](docs/INTEGRATION.md)
+- [从旧编排台迁移](docs/MIGRATION.md)
+
+## 兼容保留：旧本地编排台
+
+旧 Python 看板、SQLite 调度器和执行适配器暂时保留，用于回归与迁移验证，不再作为新产品能力的落点。旧服务仍可用：
+
+```bash
+python3 run.py serve
+```
+
+以下章节记录旧版能力和使用方法。
 
 ## 已有能力
 
