@@ -1,258 +1,322 @@
-# Codex Dev Orchestrator
+# AI 工程治理层（LobeHub + 本地 Codex）
 
-一个完全在本机运行的 AI 研发编排台。它把研发目标拆成有依赖关系的任务，让多个执行单元分别承担规划、实现、独立评审和 QA，并在关键节点等待人工拍板。
+这个项目不再自建另一套 AI 看板和多 Agent 调度器。主产品底座改为
+[LobeHub](https://github.com/lobehub/lobehub)：它已经提供成熟的任务 UI、项目、任务树、
+依赖、暂停/继续、复用已有 Topic、Codex/Claude 等异构 CLI、运行时间线、程序/Agent/LLM
+验收器、自动返修上限、跨轮 Acceptance 和最终人工接受/拒绝。
 
-执行端可以是 Codex CLI，也可以是 Claude Code CLI，按任务选择。无论用哪个，工程保证都由编排器持有：独立 worktree、按角色收紧的写权限、剥离 API Key 的环境、统一的结构化结果契约。
+本仓库只保留 LobeHub 尚不能替我们决定的工程治理原则：策略判断通过无状态 MCP 交给
+LobeHub，九步推进则由一个只保存恢复检查点的薄控制循环负责：
 
-它不调用任何模型 API，也不读取或转发 API Key。执行端直接调用本机已经登录的 CLI，用的是订阅访问能力。
+- 默认由一个已有上下文连续负责调查、实现和返修；
+- 只有真正独立的并行工作、对抗性证伪或上下文污染时才开新 Topic；
+- 不再机械模拟“项目经理、架构师、开发、测试、QA”等人类岗位；
+- 确定性程序检查优先，之后才是独立 Agent 证伪；
+- 自动返修最多一轮，再失败或出现分歧就进入人的决策信箱；
+- 人负责方向、审美、体验、不可逆/高风险决定，以及最终合并和发布责任；
+- 执行使用本机登录的 Codex CLI 订阅额度，不接模型 API，不接 API Key。
 
-## 已有能力
+## 架构
 
-- 中文 AI Kanban：待处理、可执行、执行中、等待确认、评审、阻塞、失败和完成；
-- 多角色工作流：技术协调者、方案规划者、实现工程师、独立评审者和质量验证者；
-- 父子任务、显式依赖、循环依赖检查和完成后的自动解锁；
-- 协调 Agent 可提出最多 20 个子任务及其依赖；审批恢复时按“同一父任务 + 规范化标题”复用旧任务，不重复建卡；
-- 子任务必须明确是否写文件；协调、规划和评审只读，文件交付必须交给实现或 QA 并列出预期路径；
-- 可为实现/QA 任务声明“必须交付的文件”；Agent 报完成后系统逐项确认文件存在且非空，验收失败不会释放下游；
-- 异构执行器：同一个任务图里，实现可以走 Codex，独立评审可以走 Claude Code；
-- 额度感知调度：读取登录账号的剩余比例和刷新时间，在执行器与高/中/经济模型之间自动分配；
-- 每个任务使用独立 Git worktree 和 `agent/...` 本地分支；
-- 下游任务从上游分支继续；有多个依赖时在自己的 worktree 中本地整合；
-- Codex JSONL 事件、结构化结论、token 使用量、会话 ID 和交接说明持久化；
-- 任务详情聚合运行失败、阻塞、额度等待、评审契约违规和 CLI stderr；重复告警自动归并，已知安装噪声不遮挡真正异常；
-- 独立评审自动分配给另一个执行器；评审者修改产品代码会被拒绝提交并判失败；
-- Agent 自报的检查记入账本并在闸门上呈现，空检查列表会显著标出；
-- 人工批准、拒绝、评审通过、要求修改以及同一会话继续执行；
-- SQLite 本地存储，服务重启后可恢复任务；
-- 完成变更后自动创建任务分支的本地提交，但执行器绝不 push、合并或部署；只有人在最终审批门明确批准写任务后，控制面才会用 `ff-only` 将任务分支合入本地基准分支；
-- 可作为 MCP 服务接入任意 MCP 客户端（Claude Code、Codex CLI、LobeHub 等），但审批和评审仍然只能由人在本地看板完成。
+```text
+人提出目标
+  ↓
+LobeHub Project / Task / Topic / Timeline / Acceptance UI
+  ├─ 继续最匹配的已有 Topic（默认）
+  ├─ 新 Topic：仅独立并行、对抗证伪、上下文不兼容
+  └─ LobeHub heterogeneous harness → 本地 Codex CLI
+          ↑
+本仓库的无状态治理 MCP
+  ├─ 目标 → 带版本与哈希的可验证工作契约
+  ├─ 上下文亲和路由
+  ├─ 风险自适应质量维度与只读监察 Lane
+  ├─ 发现聚合、一次返修与发布就绪判断
+  └─ 本地 Codex 额度与模型档位建议
+```
 
-运行时仅使用 Python 3.9+ 标准库，没有第三方 Python 运行依赖。
+LobeHub 是任务事实源。这个项目不再复制任务状态、评论、验收记录或前端 UI。默认的隐私
+方向是使用上游未修改的**本机自托管实例**；不要求登录 LobeHub Cloud。
 
-## 运行条件
+## 当前环境
 
-1. macOS 或其他具备 Python 3.9+ 和 Git 的本机环境；
-2. 至少一个已登录的执行器 CLI：Codex CLI（ChatGPT 登录）或 Claude Code CLI；
-3. 目标代码目录已经初始化为 Git 仓库，并至少有一个提交。
+已验证的 LobeHub Desktop：`2.2.14`。官方应用保持原样安装，本项目不复制或修改其源码。
 
-先做一次检查：
+LobeHub 的完整应用使用 LobeHub Community License；我们只把它当未修改的外部产品使用。
+本仓库自己的 Python 治理代码继续保持独立。
+
+需要明确区分两种“登录”：
+
+- LobeHub Cloud 账号：不是必需项，本项目当前不要求登录；
+- 自托管实例的本地身份：完整 Project/Task/Topic 持久化仍需要一个数据所有者。它只存在于
+  自己的本机服务，不是 LobeHub Cloud 账号。
+
+因此“暂时不登录”是合法的安装/开发状态，但在建立本地身份前不能把 LobeHub CLI 的任务
+创建、续跑和验收当成已经可用。
+
+## 第一次使用
+
+### 1. 检查
 
 ```bash
 cd "/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator"
 python3 run.py doctor
 ```
 
-成功输出应包含：
+检查项包括：
 
-```json
-{
-  "ok": true,
-  "auth_status": "Logged in using ChatGPT",
-  "api_keys_forwarded": false
-}
-```
+- LobeHub Desktop/CLI 是否存在；
+- 当前选择的是 LobeHub Cloud 还是本机自托管实例；
+- 身份是否已建立，以及是否已达到 `ready_for_live_runs`；
+- Codex CLI 是否以 ChatGPT Plus/Pro/Team 等订阅方式登录；
+- LobeHub `hetero exec` 是否支持 Codex 和显式 `--agent-arg`；
+- 在线 Desktop/CLI 设备通道（仅用于连接与可观测，不作为 Provider API Key）；
+- 可导入 LobeHub 的本地 MCP 配置；
+- `api_keys_required` 必须为 `false`。
 
-如果尚未登录，先在终端运行 `codex login`，选择 ChatGPT 登录。不要配置 `OPENAI_API_KEY`；编排器启动执行单元时也会主动移除相关 API 环境变量。
+`ok` 表示安装和配置检查本身没有错误；`ready_for_live_runs` 才表示 LobeHub 身份与 Codex
+订阅执行端都已准备好。暂缓登录时，相关信息进入 `pending_actions`，不会伪装成已经可运行。
 
-## 启动
+### 2. 优先选择本机自托管 UI
 
-最简单的方式是双击 `启动控制台.command`。
-
-也可以在终端启动：
-
-```bash
-cd "/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator"
-python3 run.py serve --open
-```
-
-默认地址为 [http://127.0.0.1:8765](http://127.0.0.1:8765)。服务默认只监听本机回环地址。
-
-## 第一次使用
-
-1. 点击左侧“＋”，填写项目名称、Git 仓库绝对路径和基准分支；
-2. 新建一个“技术协调者”任务，描述完整目标；
-3. 勾选“允许拆分子任务”和“需要人工批准”；
-4. 先保持手动调度，并勾选“立即启动”；
-5. 协调 Agent 会只读分析仓库，提出实现、评审和 QA 子任务，并为文件型任务声明必需产物；
-6. 在“等待确认”栏审核方案。批准后，下游第一个任务进入“可执行”；
-7. 逐项启动或为项目开启自动调度；
-8. 在任务详情中查看摘要、交接、对话、运行记录和完整 Diff；
-9. 最终代码仍留在 `agent/...` 本地分支，由人决定如何合入。
-
-任务详情会每 3 秒刷新。“运行异常与警告”会把原始事件账本里的失败、阻塞、额度等待、独立评审违规及 stderr 聚合出来；重复行显示次数，完整原始事件仍保存在 SQLite。没有异常时会明确显示绿色状态，而不是留一个容易误解的空白区域。
-
-推荐第一个验证目标：
-
-> 为现有项目增加一个只读版本信息端点。请先分析代码并拆成实现、独立评审和 QA 三步；实现必须有自动化测试，不得新增依赖、对外通信、push、合并或部署。方案先等我批准。
-
-## 两种调度方式
-
-- 手动调度：任务依赖满足后进入“可执行”，由人点击“智能启动”。适合首次使用和高风险工程；
-- 自动调度：项目或单个任务开启后，依赖满足即自动进入执行队列。人工审批和评审节点仍然生效。
-
-执行器默认有 2 个并发工位。并发任务各自拥有独立 worktree，不会在同一个工作目录互相覆盖。
-
-## 智能额度分配
-
-任务不指定执行器时，调度器会比较当前可用执行器的订阅额度，再决定由谁执行以及使用哪一档模型。它不是用账号价格硬猜额度：
-
-- Codex 通过本机 `codex app-server` 的 `account/rateLimits/read` 读取 ChatGPT 套餐、已用比例、额度窗口和 `resetsAt`；不会读取 OAuth Token，也不会发送模型请求；
-- Claude Code 从 CLI/Agent SDK 的 `rate_limit_event` 读取 `utilization`、额度类型与 `resets_at`，只把不含凭据的快照写入 `.data/quota/claude-code.json`；
-- Claude 尚未运行、没有可验证快照时显示“额度待观测”，并按谨慎档处理，而不是伪造一个精确数字；
-- 额度触顶的自动任务保持 `ready`，等刷新后重新判断，不会被误记为代码执行失败；
-- 人在任务上明确指定执行器，或项目固定默认执行器时，人工选择优先；已有会话固定沿用原执行器和模型，避免跨平台恢复错误。
-
-策略分四档：充裕时允许高档模型处理复杂规划、实现和评审；适中时按角色选择；偏紧时降档；进入保留区时只用经济模型。离刷新不足 30 分钟时会适度放宽，因为同样的剩余额度在窗口末尾比窗口开头更值得使用。调度器不会自动购买额外用量，也不会自动消耗 Codex 的 rate-limit reset credit。
-
-默认模型档位：
-
-| 档位 | Codex | Claude Code |
-| --- | --- | --- |
-| 高 | `gpt-5.6-sol` | `opus` |
-| 中 | `gpt-5.6-terra` | `sonnet` |
-| 经济 | `gpt-5.6-luna` | `haiku` |
-
-Claude 官方从 2026-06-15 起把订阅账号上的 `claude -p` / Agent SDK 用量计入独立的月度 Agent SDK credit；本工程调用的是 `claude -p`，所以调度依据应以它实际返回的 rate-limit event 为准，而不能拿交互界面的 5 小时进度条代替。
-
-## 作为 MCP 服务接入其他客户端
-
-编排器可以把自己暴露成一个标准 MCP（Model Context Protocol）服务，让外部的对话式客户端读取和扩展任务图、启动任务、查看 Diff。这一层是客户端无关的：Claude Code、Codex CLI、Cursor、LobeHub 都能连。
-
-先确保 `python3 run.py serve` 正在运行，然后：
+上游 LobeHub 提供完整自托管应用。准备好本机服务后，把 CLI 目标指向它：
 
 ```bash
-python3 run.py mcp
+ORCH_LOBEHUB_SERVER="http://127.0.0.1:3210" python3 run.py doctor
 ```
 
-它通过 stdio 说 JSON-RPC，只向本机 `127.0.0.1` 的编排器 HTTP API 转发请求。这个进程**不持有数据库、不启动调度器、不调用 Codex**，也拒绝连接任何非回环地址。
+本项目不会复制 LobeHub 源码，也不会为了去掉登录而修改它的数据库身份约束。正式接入前有
+两个必须验证的门槛：上游 Project/Task/Topic/Acceptance 在自托管版中完整可用；只使用本地
+Codex heterogeneous CLI 时不需要配置任何模型 API Key。任一不满足，就不把 LobeHub 选为
+事实源。
 
-在 MCP 客户端里的典型配置：
+当前机器已经使用 Docker Desktop 启动完整的 LobeHub 自托管栈，入口为
+`http://127.0.0.1:3210`。部署配置位于被 Git 忽略的
+`.data/lobehub-selfhost/`：LobeHub 与 RustFS 只监听回环地址，PostgreSQL 与 Redis 不发布
+宿主机端口，`.env` 权限为仅当前用户可读，且不包含任何模型 API Key。
 
-```json
-{
-  "mcpServers": {
-    "codex-orchestrator": {
-      "command": "python3",
-      "args": ["run.py", "mcp"],
-      "cwd": "/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator"
-    }
-  }
-}
+本机服务的日常启动与状态检查：
+
+```bash
+cd "/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator/.data/lobehub-selfhost"
+docker compose --env-file .env up -d
+docker compose --env-file .env ps
 ```
 
-### 暴露的工具
+### 3. 身份（可以暂缓）
+
+若以后启用本机自托管实例，只需要在该实例建立本地身份：
+
+```bash
+ORCH_LOBEHUB_SERVER="http://127.0.0.1:3210" python3 run.py login
+```
+
+这不是 LobeHub Cloud 登录。Codex CLI 继续使用它自己的 ChatGPT 订阅身份；不要设置
+`OPENAI_API_KEY`。
+
+### 4. 把治理 MCP 导入 LobeHub
+
+```bash
+python3 run.py lobehub-config
+```
+
+复制输出的 JSON。在 LobeHub Desktop 中进入设置的自定义 MCP 页面，选择快速导入 JSON。
+它会启动：
+
+```text
+python3 /绝对路径/run.py mcp
+```
+
+该 MCP 只有七个无状态策略工具：
 
 | 工具 | 作用 |
 | --- | --- |
-| `list_projects` | 列出人工登记过的仓库 |
-| `get_status` | 读取任务图：不带参数看健康状况，带 `project_id` 看分栏汇总，带 `task_id` 看单任务详情 |
-| `get_diff` | 读取某个任务分支相对基准分支的本地 Diff |
-| `list_pending_approvals` | 列出所有等待人工决定的审批和待评审任务，附看板深链 |
-| `plan_workflow` | 为一个研发目标创建协调者任务；`allow_delegation` 和 `requires_approval` 被强制为真 |
-| `create_task` | 向任务图追加一个任务，可用 `executor` 指定执行器 |
-| `add_dependency` | 建立依赖，循环由编排器拒绝 |
-| `run_task` | 把任务排入执行队列，在独立 worktree 中运行 |
-| `retry_task` | 重试失败或阻塞的任务 |
+| `compile_engineering_goal` | 冻结目标、非目标、禁区、风险、验收和安全/恢复边界；关键结果缺失时返回追问 |
+| `route_to_context` | 对 LobeHub 已有 Topic 做可解释的上下文亲和度路由 |
+| `get_codex_quota_advice` | 读取本地 Codex App Server 的额度窗口并建议模型档位 |
+| `compare_engineering_contracts` | 检测目标、范围、验收、安全和风险漂移，要求人确认受保护字段变化 |
+| `build_verification_plan` | 按风险与变更面生成确定性门禁和独立只读反证 Lane |
+| `aggregate_verification_findings` | 过滤低置信噪声、去重并决定通过、一次集中返修或升级 |
+| `decide_release_readiness` | 根据契约和证据判断本地交付/人工决策/发布就绪，不执行外部动作 |
 
-### 刻意不暴露的操作
+它没有批准、合并、发布、删除、任意命令执行或 API Key 工具。
 
-批准、拒绝、评审通过、要求修改、登记新项目，以及给任务留人工消息——这些都不是工具。MCP 只会返回形如 `http://127.0.0.1:8765/#/task/tsk_xxxx` 的深链，由人打开本地看板决定。
+### 5. 在 LobeHub 原生对象中建立项目与验收规则
 
-原因是这个工程的价值就在于闸门是确定性状态机，而不是提示词里的约定。把 `approve_task` 做成模型可调用的工具，等于把审批降级成"提示词里说要人类确认"；MCP 客户端的确认弹窗也不等于一条有身份、有理由、可审计的审批记录。同理，`message` 通道会让模型写入的内容以 `Human` 身份进入下游任务上下文，因此一并排除。
+本地身份建立完成后运行：
 
-转发层还有一份硬编码的接口白名单：即使以后新增工具，也无法构造出白名单以外的请求路径。
+```bash
+ORCH_LOBEHUB_SERVER="http://127.0.0.1:3210" python3 run.py bootstrap \
+  --project-name "AI 工程治理层" \
+  --identifier DEV \
+  --repo "/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator"
+```
 
-## 配置
+这会幂等地完成三件事：
 
-通过环境变量调整：
+- 保留 Project Coordinator 的治理指令，但不把它伪装成 Codex 执行端；
+- 根据当前订阅额度为逻辑 owner/verifier 选择 Sol、Terra 或 Luna；
+- 建立四个面向用户结果的 Criterion 和 `maxRepairRounds=1` 的 Rubric。
 
-| 变量 | 默认值 | 作用 |
+owner 和 verifier 不是 LobeHub Provider Agent，而是两种执行策略：
+`hetero:codex:workspace-write` 和 `hetero:codex:read-only`。它们都调用本地已登录
+Codex CLI，不配置模型 API Key。项目还安装了 LobeHub 官方 `acceptance`
+Skill，以及本仓库的 `govern-engineering-delivery` Skill。
+
+也可以直接创建一张已经带治理契约的根任务：
+
+```bash
+ORCH_LOBEHUB_SERVER="http://127.0.0.1:3210" python3 run.py goal \
+  --project <LobeHub项目ID> \
+  --name "实现版本端点" \
+  --goal "为服务增加只读版本端点" \
+  --outcome "调用方可以读取当前构建版本，并在无此能力时得到明确错误" \
+  --accept "GET /version 返回当前构建版本" \
+  --accept "未知构建版本时返回文档化的失败响应" \
+  --non-goal "不改变已有写接口" \
+  --prohibit "不新增对外网络调用" \
+  --surface api \
+  --observe "版本端点成功/失败日志" \
+  --risk low
+```
+
+如果没有可观察的 Acceptance Criteria，或者只写“测试通过/CI 绿色”，命令不会创建任务，而是
+返回 `needs_clarification` 和必须回答的关键问题。成功时会同时返回 `task_id` 与
+`topic_id`：Task 是工作事实源，Topic 保存冻结契约和 Codex 事件，Task 评论中保存
+稳定关联。
+
+LobeHub 2.2.14 的 Task 负责人界面只接受 Provider Agent，尚不能直接绑定
+heterogeneous Codex。本项目只用发布版 CLI 的 `topic create`、`message create/edit` 和
+`task comment` 做薄关联，不读写 LobeHub 私有数据库或内部 API。
+
+## 九步自动控制循环
+
+`run-governed-task` 把原先需要主控逐项调用的九步接成一个可恢复状态机：
+
+1. 编译并冻结工作契约；
+2. 创建或核对 LobeHub Task，并绑定 Owner Topic；
+3. 按上下文亲和度继续已有 Topic/原生 Codex Session；
+4. 读取本地订阅额度，冻结本轮 Owner/Verifier 模型选择；
+5. 用 `workspace-write + --approve-for-me` 运行连续 Owner；
+6. 用无 shell 的明确参数执行确定性门禁；
+7. 只在门禁通过后运行计划要求的只读反证 Lane；
+8. 有阻断证据时，把失败批量返回原 Owner，最多自动返修一次并完整回归；
+9. 生成 Acceptance handoff，暂停 Task，等待人做最终 accept/reject。
+
+输入是一个 JSON spec。可从
+[`docs/governed-task.example.json`](docs/governed-task.example.json) 复制：
+
+```bash
+ORCH_LOBEHUB_SERVER="http://127.0.0.1:3210" python3 run.py run-governed-task \
+  --spec docs/my-task.json
+```
+
+命令会返回 `run_id` 和本机恢复账本路径。发生进程退出、LobeHub 暂时不可用或 Codex
+中断后，使用同一个运行 ID 恢复：
+
+```bash
+ORCH_LOBEHUB_SERVER="http://127.0.0.1:3210" python3 run.py run-governed-task \
+  --resume <run_id>
+```
+
+查看状态不会推进运行，也不要求调用模型：
+
+```bash
+python3 run.py governed-task-status <run_id>
+```
+
+高风险、主观、安全敏感或不可逆契约会在材料执行前停下。人在看过 LobeHub Task 后，可用
+显式命令记录决定并从同一检查点继续；这个记录带入 Task 时间线，不是 Agent 模拟审批：
+
+```bash
+ORCH_LOBEHUB_SERVER="http://127.0.0.1:3210" python3 run.py run-governed-task \
+  --resume <run_id> \
+  --approve-material-execution \
+  --decision-note "已确认信任边界、回滚路径和可观测信号"
+```
+
+恢复账本默认位于被 Git 忽略的 `.data/governed-runs/`，权限为当前用户可读写。它只保存
+阶段、LobeHub 对象 ID、Codex Session、脱敏门禁摘要和事件 ID；Task、对话和 Acceptance
+内容仍以 LobeHub 为事实源。每次 `pending → running → completed/skipped/waiting` 都先原子写入
+账本，再以 `[engineering-governance run-event]` 幂等评论同步到 Task。
+
+若本地在 Codex 已完成并把正文写入 LobeHub 后、尚未来得及完成阶段检查点就退出，恢复时会
+先核对原 assistant message；正文已经存在就直接采用，不会重复执行这一轮。程序门禁只接受
+argv 数组且不启 shell，拒绝内联解释器、明显的删除、发布、部署和危险 Git 命令；门禁前后
+工作区指纹变化也会直接判失败。原始门禁输出不写入 Task 评论，账本只保留脱敏尾部和完整
+输出摘要哈希。
+
+最终状态是 `awaiting_human_acceptance`。控制循环不会自动 push、merge、deploy、publish，
+也不会代替人在 LobeHub Acceptance 点击接受或拒绝。
+
+## 手动推进与故障排查
+
+1. 建立或选择一个 Project；
+2. 把业务目标、非目标、禁区、风险和用户可观察的验收结果交给
+   `compile_engineering_goal`；只有返回 `status=ready` 才继续，并冻结 `contract_hash`；
+3. 使用 `goal` 命令创建未分配 Provider Agent 的根 Task 和已关联 Topic；
+4. 从相同 Project/仓库的 Topic 中调用 `route_to_context`；
+5. 返回 `continue_existing` 时，使用 `execute-topic --resume <CodexSessionId>` 继续；
+6. 调用 `build_verification_plan`，先运行仓库自己的确定性门禁；这些门禁不进入 Acceptance checks；
+7. 只启动计划点名的全新只读 Topic 做反证，再用 `aggregate_verification_findings` 合并证据；
+8. 如有阻断发现，原 owner Topic 只做一次集中返修；再次失败或分歧就升级；
+9. 按官方 `acceptance` Skill 发布不可变证据 round；人的最终 accept/reject 不可由 Agent 模拟。
+
+这组步骤是自动循环的展开形式，主要用于排查某个状态、单独重放安全的只读步骤，或接入尚未
+支持的仓库门禁；正常新任务优先使用 `run-governed-task`。
+
+执行一个已冻结任务：
+
+```bash
+ORCH_LOBEHUB_SERVER="http://127.0.0.1:3210" python3 run.py execute-topic \
+  --task <Task ID或DEV-1> \
+  --topic <Topic ID> \
+  --repo "/绝对路径/仓库" \
+  --sandbox workspace-write
+```
+
+独立监察必须改为 `--sandbox read-only`。续跑时增加 `--resume <CodexSessionId>`。编排器
+始终显式传入沙箱，禁止 `--dangerously-bypass-approvals-and-sandbox`；LobeHub
+2.2.14 与当前 Codex CLI 的 resume 参数顺序差异由一个只重排参数的兼容层处理。
+
+首次执行的返回值中，`session_id` 表示调用时传入的续跑 ID，因此通常是 `null`；
+`continuation_session_id` 是这次运行捕获到、供下一次 `--resume` 使用的原生 Codex session。
+该 ID 同时写入 Task 评论。适配层只从受限临时 raw dump 解析 `thread.started.thread_id`，随后
+立即删除临时目录，不读取 OAuth 凭据或 API Key。
+
+正常成功时，harness JSONL 事件仍会 ingest 到 LobeHub，编排器还会用官方
+`message edit` 持久化最终文本，规避 2.2.14 成功 stream 不落正文的已验证差异。
+
+测试、构建、Lint、类型检查和扫描器照常运行，但只作为交付门禁和一行叙述，不作为 Criterion。
+最终 `accept/reject` 仍由人操作，治理 MCP 不具备这个权限。
+
+## 额度策略
+
+`get_codex_quota_advice` 通过本机 `codex app-server` 的
+`account/rateLimits/read` 读取套餐、使用比例、额度窗口和刷新时间。它不读取 OAuth Token，
+也不会发起模型请求。
+
+建议映射：
+
+| 档位 | Codex 模型 | 使用原则 |
 | --- | --- | --- |
-| `ORCH_DATA_DIR` | 工程内 `.data` | SQLite、运行结果和 worktree 的位置 |
-| `ORCH_HOST` | `127.0.0.1` | Web 服务监听地址 |
-| `ORCH_PORT` | `8765` | Web 服务端口 |
-| `ORCH_MAX_WORKERS` | `2` | 同时运行的 Agent 任务数 |
-| `ORCH_CODEX_BINARY` | `codex` | Codex CLI 路径或命令名 |
-| `ORCH_CODEX_MODEL` | 空 | 固定所有 Codex 任务的模型；空表示允许智能分档 |
-| `ORCH_CODEX_MODEL_HIGH` | `gpt-5.6-sol` | Codex 高档模型 |
-| `ORCH_CODEX_MODEL_BALANCED` | `gpt-5.6-terra` | Codex 中档模型 |
-| `ORCH_CODEX_MODEL_ECONOMY` | `gpt-5.6-luna` | Codex 经济模型 |
-| `ORCH_EXECUTORS` | `codex` | 启用的执行器，逗号分隔：`codex`、`claude-code` |
-| `ORCH_DEFAULT_EXECUTOR` | 列表第一个 | 额度相近或未知时优先的执行器 |
-| `ORCH_CLAUDE_BINARY` | `claude`，回退 `CLAUDE_CODE_EXECPATH` | Claude Code CLI 路径或命令名 |
-| `ORCH_CLAUDE_MODEL` | 空 | 固定所有 Claude Code 任务的模型；空表示允许智能分档 |
-| `ORCH_CLAUDE_MODEL_HIGH` | `opus` | Claude 高档模型 |
-| `ORCH_CLAUDE_MODEL_BALANCED` | `sonnet` | Claude 中档模型 |
-| `ORCH_CLAUDE_MODEL_ECONOMY` | `haiku` | Claude 经济模型 |
-| `ORCH_QUOTA_SCHEDULING` | `1` | 是否启用额度感知的执行器与模型选择 |
-| `ORCH_QUOTA_CACHE_SECONDS` | `60` | Codex 实时额度快照缓存时间 |
-| `ORCH_CROSS_REVIEW` | `1` | 评审子任务是否自动换用另一个执行器 |
-| `ORCH_RUN_TIMEOUT_SECONDS` | `3600` | 单次执行超时，最低 60 秒 |
+| high | `gpt-5.6-sol` | 额度充裕且任务复杂/高价值 |
+| balanced | `gpt-5.6-terra` | 日常实现与一般分析 |
+| economy | `gpt-5.6-luna` | 额度偏紧、机械任务或观察期 |
 
-例如换端口：
+触顶时返回 `defer_until`，不会购买额外用量或自动消耗 reset credit。
+
+## 旧版迁移
+
+旧的 Python 看板、SQLite、worktree 调度器仍保留在 Git 历史和标签
+`legacy-local-orchestrator-v1` 中；现有 `.data` 不删除，方便回看本次法律计费 Demo 的审计记录。
+
+如确实要临时打开旧版：
 
 ```bash
-ORCH_PORT=8877 python3 run.py serve
+python3 run.py legacy-serve --open
 ```
 
-## 执行器
-
-默认只启用 Codex。要同时启用两个：
-
-```bash
-ORCH_EXECUTORS="codex,claude-code" python3 run.py serve
-```
-
-选择顺序是**现有会话固定 → 任务指定 → 项目默认 → 额度智能比较**。部署默认只在额度接近或不可观测时作为偏好。新建任务保持“智能分配（推荐）”即可，也可以通过 MCP 的 `executor` 参数固定执行器。
-
-| | Codex CLI | Claude Code CLI |
-| --- | --- | --- |
-| 只读角色（协调、规划、评审） | `--sandbox read-only` | 工具白名单只有 `Read,Grep,Glob`，并要求原生 Bash sandbox 可用 |
-| 写入角色（实现、QA） | `--sandbox workspace-write` | 白名单加上 `Edit,Write,Bash` 等，Bash 仍在原生 sandbox 内运行 |
-| 工作目录 | `--cd <worktree>` | 进程 cwd 固定为该任务 worktree |
-| 结构化结果 | CLI 原生 `--output-schema` | CLI 原生 `--json-schema`，结果从 `structured_output` 读取 |
-| 网络与发布 | 沙箱限制网络 | 原生 sandbox 禁止本机回环访问和本地端口监听；工具策略另拒绝 Web 工具及 Git 发布操作 |
-| 外部工具面 | 沙箱内无 MCP | `--mcp-config '{"mcpServers":{}}' --strict-mcp-config` 切断继承来的 MCP 服务 |
-| 会话恢复 | `exec resume <session>` | `--resume <session>` |
-| 登录检查 | `codex login status` 必须是 ChatGPT 登录 | `claude auth status` 返回 JSON，校验 `loggedIn` 并报告登录方式与订阅类型 |
-
-以上参数对照 Codex CLI `0.148.0-alpha.21` 和 Claude Code `2.1.237` 实测确认。两条容易踩的坑：`--json-schema` 不接受带 `$schema` 草案引用的 schema（编排器会自动剥掉），并且 `--allowedTools` 这类变长参数会吞掉紧随其后的提示词，所以提示词前必须有 `--` 结束符。
-
-两条永远不变的规则：任何执行器都不会拿到 `danger-full-access` 或 `--dangerously-skip-permissions`；任何执行器都不能 push、合并或部署。
-
-### CLI 不在 PATH 上
-
-两个 CLI 都可能装在非标准位置。Codex 桌面版在 `/Applications/ChatGPT.app/Contents/Resources/codex`；Claude Code 的 IDE 扩展版在 `~/.cursor/extensions/anthropic.claude-code-*/resources/native-binary/claude` 或 VS Code 的对应目录。用环境变量指过去即可：
-
-```bash
-ORCH_CODEX_BINARY="/Applications/ChatGPT.app/Contents/Resources/codex" \
-ORCH_EXECUTORS="codex,claude-code" python3 run.py doctor
-```
-
-`claude` 不在 PATH 且 `ORCH_CLAUDE_BINARY` 未设置时，编排器会回退到 `CLAUDE_CODE_EXECPATH`（从 IDE 终端启动时通常已经导出）。`doctor` 会明确告诉你哪个执行器找不到。
-
-某个执行器不可用不会拖垮看板——`doctor` 会分别列出每个执行器的状态，只要还有一个可用，其余任务照常运行；指定了不可用执行器的任务会单独失败并说明原因。
-
-```bash
-ORCH_EXECUTORS="codex,claude-code" python3 run.py doctor
-```
-
-## 安全边界
-
-编排器的安全模型是“本机控制面 + 隔离工作树 + 人工闸门”：
-
-- 只接受本机已经登录的执行器 CLI；
-- 不提供任何模型 API 调用代码，也不向子进程传递常见 API Key（OpenAI 与 Anthropic 两侧都剥离）；
-- 规划、协调和评审角色使用只读沙箱；
-- 实现和 QA 可以写，但工作目录限定为该任务的独立 worktree；Claude 的 Bash 还要求原生 OS sandbox 成功启动，并禁止访问本机控制面；
-- 评审角色只报告发现，不修复文件；即使某个执行器越过只读约束产生改动，编排器仍会记录契约违规、拒绝提交并让任务失败；
-- Agent 提示明确禁止 push、merge、删分支、发布、部署和联系外部人员；
-- Git 服务只创建 worktree、本地分支、本地提交，并可在下游 worktree 中整合依赖分支；
-- 架构、安全策略、破坏性迁移、含糊产品决定和最终合并应保留人工确认；
-- 本机 HTTP 控制面只信任回环 Host；写请求要求 JSON 和同源浏览器上下文，以降低 DNS rebinding 与 CSRF 风险；
-- `.data` 可能包含代码副本、任务描述和运行输出，应按本地研发资料保护，不要提交到 Git。
-
-这不是强隔离的远程多租户执行平台。不要把监听地址开放到不可信网络，也不要把不可信仓库与敏感本机凭据混在同一用户环境中运行。
+旧版只用于迁移和对照，不再接收产品功能。
 
 ## 测试
 
@@ -261,16 +325,11 @@ PYTHONPYCACHEPREFIX=/tmp/codex-orchestrator-pycache \
 python3 -m unittest discover -s tests -v
 ```
 
-测试使用模拟 Codex，不消耗订阅额度。真实 Codex 端到端验收需要从看板创建任务执行。
+运行时仍只依赖 Python 3.9+ 标准库。
 
-## 数据与清理
+## 资料依据
 
-运行数据位于 `.data/`：
-
-- `orchestrator.sqlite3`：项目、任务、依赖、消息、审批、事件和运行记录；
-- `runs/`：每次 Codex 的结构化最终结果；
-- `worktrees/`：任务隔离工作树。
-
-停止服务不会删除这些数据；再次启动时，之前中断的运行会标记为失败，可在看板中重试。若要清理，先停止服务，并确认相应 worktree 和本地 Agent 分支不再需要。编排器当前刻意不提供“一键删除全部”功能。
-
-更详细的内部结构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+- [LobeHub 主仓库](https://github.com/lobehub/lobehub)
+- [LobeHub Task](https://lobehub.com/task)
+- [LobeHub 的 Codex 集成](https://lobehub.com/coding/codex)
+- [LobeHub Desktop 下载](https://lobehub.com/downloads)

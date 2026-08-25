@@ -1,259 +1,225 @@
-# 架构说明
+# 架构说明：LobeHub 原生工作流 + 薄治理层
 
-## 目标
+## 决策
 
-这个工程不是一个“大包大揽的超级 Agent”，而是一个本地控制面：让多个强执行 Agent 在明确角色、任务依赖、隔离代码空间和人工决策点下协作。
+旧版把任务 UI、任务图、消息、worktree、CLI 执行、评审和审批全部自建了一遍。法律计费
+Demo 的实测说明，它虽然提供了隔离与审计，却没有在单项交付上产生生产力收益：固定人类岗位式
+拆分造成重复理解，返修四次，约 575 万输入 token，且看板自身还出现了合入缺陷。
 
-```mermaid
-flowchart LR
-    H[人：目标与关键决策] --> B[AI Kanban 控制台]
-    B --> S[调度器]
-    S --> C[协调 / 规划 Agent]
-    S --> I[实现 Agent]
-    S --> R[独立评审 Agent]
-    S --> Q[QA Agent]
-    C --> D[(SQLite 任务图与消息)]
-    I --> W1[独立 worktree / 分支]
-    R --> W2[独立 worktree / 分支]
-    Q --> W3[独立 worktree / 分支]
-    C & I & R & Q --> CLI[ChatGPT 登录的 Codex CLI]
-    I & R & Q --> G[本地 Git 提交与 Diff]
-    G --> H
-```
+LobeHub 2.2.14 已经原生提供：
 
-## 组件
+- 成熟 Task/Project/Topic/评论/时间线 UI；
+- 子任务、依赖、暂停、恢复、heartbeat 和 watchdog；
+- Topic、Message 和 heterogeneous CLI Harness；
+- Codex、Claude Code 等异构本地 CLI Harness；
+- 程序、Agent、LLM 三类 Criterion 与 Rubric；
+- `maxRepairRounds`、Acceptance 跨轮反馈和最终人工接受/拒绝。
 
-| 组件 | 职责 |
-| --- | --- |
-| Web 控制台 | 项目接入、任务创建、状态看板、运行告警、消息、审批、评审和 Diff 展示 |
-| SQLite 数据库 | 保存项目、任务图、运行、事件、消息、会话、审批和交接信息 |
-| 调度器 | 并发工位、领取任务、依赖解锁、自动调度、启动恢复和结果状态机 |
-| 执行器注册表 | 按任务解析执行器、分别做可用性预检、把一个执行器的故障隔离在它自己的任务上 |
-| 额度观察与策略 | 将 Codex App Server 和 Claude rate-limit event 归一成额度快照，按余量、刷新时间、角色和优先级选择执行器与模型 |
-| 执行公共内核 | 进程监管、硬超时、事件抽取、环境变量剥离、提示词脱敏、结构化结果提取与校验 |
-| Codex 执行适配器 | ChatGPT 登录预检、构造 `codex exec`、JSONL 事件、原生 `--output-schema` 输出、会话恢复 |
-| Claude Code 执行适配器 | 构造 `claude -p`、按角色收紧工具白名单、stream-json 事件、在本地强制结果契约 |
-| Git 服务 | 仓库校验、安全 ref、worktree、本地任务分支、依赖分支整合、Diff 和本地提交 |
-| 结构化结果协议 | 约束 Agent 的结果、交接、测试、子任务提议、消息和下一状态 |
-| MCP 桥接层 | 把受控的一小组工具通过 stdio 暴露给任意 MCP 客户端；无状态，只转发到本机 HTTP API |
+因此本项目不再和它竞争。LobeHub 是产品和事实源，本项目包含无状态治理策略，以及一份只为
+断点恢复存在的薄控制循环。部署优先级是未修改的本机自托管 LobeHub，而不是 LobeHub Cloud。
 
-## 一次典型功能的状态流
+## 不变量
 
-```mermaid
-sequenceDiagram
-    participant H as 人
-    participant O as 编排器
-    participant C as 协调 Agent
-    participant I as 实现 Agent
-    participant R as 评审 Agent
-    participant Q as QA Agent
-
-    H->>O: 提交目标，要求先审批方案
-    O->>C: 只读分析仓库
-    C-->>O: 实现 → 评审 → QA 任务图
-    O-->>H: 等待确认
-    H->>O: 批准方案
-    O->>I: 创建 worktree 并执行
-    I-->>O: 测试、摘要、本地提交、建议评审
-    O-->>H: 展示 Diff，等待人工评审
-    H->>O: 评审通过
-    O->>R: 从实现分支创建下游 worktree
-    R-->>O: 独立审查结论
-    O->>Q: 从已评审代码创建下游 worktree
-    Q-->>O: 回归与端到端验证结果
-    O-->>H: 保留本地分支，等待最终合并决定
-```
-
-## 任务图与代码继承
-
-每个任务可以有父任务和任意数量的前置依赖。只有全部依赖进入 `done`，任务才从 `blocked` 变为 `ready`。
-
-执行时：
-
-1. 没有代码依赖的任务从项目基准分支创建 worktree；
-2. 有一个已完成依赖时，从该依赖的任务分支创建；
-3. 有多个依赖时，以第一个分支为基线，在新 worktree 中依次本地合并其余依赖分支；
-4. 冲突会让任务失败并保留证据，不会修改主工作目录；
-5. Agent 结束后，编排器把变更提交到当前任务分支；
-6. 编排器不 push，也不把任务分支合入项目基准分支。
-
-协调 Agent 产生的子任务默认依赖协调任务本身，所以必须先完成方案审批，子任务才会释放。子任务之间还能按提议标题建立额外依赖。
-
-## Agent 通信
-
-通信不是多个终端自由聊天，而是经过控制面的持久消息：
-
-- 人可以在任务详情中给 Agent 留消息；
-- Agent 可向同项目、且已出现在上下文里的任务 ID 发送交接消息；
-- 消息随下一次执行或会话恢复进入任务上下文；
-- 每个任务另有 `summary` 和 `handoff`，供人和下游任务核对；
-- Codex 会话 ID 保存到任务，退回修改时在同一会话和 worktree 中继续。
-
-这种机制牺牲了无约束群聊的自由度，换来可审计、可重放和明确的任务所有权。
-
-## 监察与对抗
-
-闸门只有在人拿到足够信息、且被审查的一方无法自行消除证据时才有意义。三条机制服务于此：
-
-**评审者不得修改产品代码。** 评审角色需要可写工作树来跑测试，但只要 Git porcelain 能看到已跟踪修改或未跟踪新文件，编排器就拒绝提交、记录 `review.contract_violation` 事件并让任务失败，改动留在 worktree 里作为证据。理由是这条边界一旦松开会双重失效：本该写成结论的问题被就地改掉，人看到的 diff 里实现与评审混在一起，无法分辨。QA 不受此限，它的职责本就包含补测试。
-
-**独立评审换执行器。** 协调者拆出的子任务默认继承父任务的执行器，评审角色例外——只要还有另一个可用执行器，评审就交给它。同一个模型评审自己的产出是整条闸门链里最弱的一环。单执行器部署时自动回退，`ORCH_CROSS_REVIEW=0` 可关闭。
-
-**自报检查进入账本并呈现在闸门上。** Agent 结果里的 `tests` 写入任务的 `evidence` 字段，在任务详情里单列一节。这些是**声明而非证明**——编排器不会替 Agent 重跑测试。把它们存下来的价值在于可审计：一个声称完成实现却报告空检查列表的任务，那个空列表本身就是信号，界面会显著标出。
-
-尚未做到的：编排器不独立验证测试是否真的执行过，也不强制"完成前必须经过评审或 QA"。前者需要在受控环境里重跑并比对，后者需要工作流模板约束协调者的拆解。这两条目前依赖人工判断。
-
-## 运行监控与修复闭环
-
-监控分三层，避免只靠某一个 Agent 自己说“运行正常”：
-
-1. `ProcessSupervisor` 实时抽取 stdout/stderr，并对每次 CLI 运行设置硬超时；
-2. SQLite 事件表保存完整原始证据，服务重启也不会丢；
-3. 任务详情每 3 秒读取聚合告警，突出 `run.failed`、`task.blocked`、`task.executor_unavailable`、`task.quota_deferred`、`review.contract_violation` 和两种 CLI 的 stderr。重复信号归并计数，已知插件安装噪声过滤，但原始事件不删除。
-
-发现异常后的安全闭环是：
-
-```mermaid
-flowchart LR
-    O[观察器发现异常] --> I[形成 incident / 修复任务]
-    I --> W[独立 worktree 修复]
-    W --> T[测试与独立评审]
-    T --> H[人工批准]
-    H --> M[人决定是否合并]
-```
-
-编排器不让观察器直接热改正在运行的任务分支，也不自动合并。这样即使“修复 Agent”判断错误，原始失败现场、修复 Diff 和审批记录仍然分开。当前版本已完成事件采集、持久化、聚合告警与人工修复入口；独立于服务进程的 OS watchdog、自动重启和外部通知仍属于后续能力，服务本身崩溃时应由 launchd/systemd 等进程管理器接管。
-
-## 人工闸门
-
-有三类停点：
-
-1. 任务预设 `requires_approval`：Agent 完成后等待批准，批准才标记完成；
-2. Agent 主动返回 `needs_approval`：遇到架构、安全、迁移或产品歧义时提出具体问题；
-3. 实现返回 `recommended_stage=review`：进入人工代码评审，可通过或带说明退回。
-
-拒绝或要求修改不会创建新任务，而是给原任务追加人工消息并恢复同一个 Codex 会话。这样保留上下文、Diff 和责任边界。
-
-## Codex 执行契约
-
-首次执行大致等价于：
-
-```text
-codex exec --json --sandbox <read-only|workspace-write> \
-  --cd <task-worktree> --output-schema <schema> \
-  -o <run-final.json> <prompt>
-```
-
-编排器记录 JSONL 事件中的会话 ID和 token 使用量，并读取最终结构化 JSON。提示词对所有角色施加共同边界，再添加角色职责和任务上下文。
-
-协调/规划使用 `read-only`。实现/评审/QA 使用 `workspace-write`；评审需要可写测试临时文件，但被限定在独立 worktree，且角色契约禁止编辑产品代码。
-
-Claude Code 同时使用工具白名单和官方原生 Bash sandbox。只读角色拿不到编辑或 Bash 工具；写角色可以运行本地检查，但设置要求 sandbox 启动失败时整个任务失败、禁止 unsandboxed command、禁止本机回环地址和本地端口监听。只禁用 `WebFetch` 并不能约束 Bash 里的网络程序，因此 OS sandbox 是不可省略的一层。
-
-## 执行器
-
-执行器是可替换的，工程保证不是。任何 CLI 接进来都拿到同一套东西：
+> 单一上下文连续负责，确定性系统负责门禁，独立 AI 负责证伪，Acceptance 负责结果证据，人类负责方向、品味与责任。
 
 ```mermaid
 flowchart TB
-    T[任务] --> R[执行器注册表]
-    R -->|任务指定 → 项目默认 → 部署默认| E[选中的执行器]
-    subgraph K[编排器持有的保证]
-        W[独立 worktree 作为 cwd]
-        P[按角色收紧的写权限]
-        V[剥离 API Key 的环境]
-        C[结构化结果契约]
-        O[硬超时与事件账本]
-    end
-    E --> K
-    K --> X1[Codex CLI]
-    K --> X2[Claude Code CLI]
+    H[人：目标、方向、品味、责任] --> L[LobeHub Project / Task]
+    L --> C{上下文亲和路由}
+    C -->|默认| E[继续已有 Topic]
+    C -->|独立并行 / 证伪 / 不兼容| N[新 Topic]
+    E --> X[本地 Codex CLI]
+    N --> X
+    X --> P[程序化门禁：测试 / 构建 / 扫描]
+    P -->|失败| F[最多一次批量返修]
+    F --> P
+    P -->|通过| A[风险选出的新上下文只读证伪]
+    A -->|一致且低风险| D[自动推进]
+    A -->|分歧 / 高风险 / 主观| I[LobeHub 决策信箱]
+    D --> I
+    I --> H
 ```
 
-差别只在于每个 CLI 各自能原生提供多少，以及缺的部分由谁补。
+## LobeHub 与本项目的边界
 
-结果契约两边都是原生的：Codex 用 `--output-schema` 加 `-o`，Claude Code 用 `--json-schema`，并把校验过的对象放在最终 `result` 事件的 `structured_output` 字段里。执行器优先读它，只有该字段缺失时才退回到从回答文本里提取 JSON——那条降级路径留给行为不同的 CLI 版本，不是常规路径。无论走哪条，缺必填字段的运行一律失败，不会有自然语言结论直接驱动任务状态。
+| 能力 | 所有者 |
+| --- | --- |
+| 项目、任务、Topic、依赖、评论、附件 | LobeHub |
+| Project、Task、Topic、Message 和 Acceptance 持久化 | LobeHub |
+| heterogeneous Codex 事件转换与 server ingest | LobeHub CLI |
+| 安全沙箱强制、Task–Topic 薄关联和 2.2.14 兼容处理 | 本项目适配层 |
+| 运行时间线、Diff、暂停/恢复、watchdog | LobeHub |
+| Criterion、Rubric、Acceptance、人工接受/拒绝 | LobeHub |
+| 目标编译的组织原则 | 本项目 MCP |
+| 已有 Topic 的上下文亲和评分 | 本项目 MCP |
+| 多维质量计划、契约漂移和发现聚合 | 本项目 MCP |
+| Codex 订阅额度与刷新时间建议 | 本项目 MCP |
+| 九步推进、原子检查点、幂等状态事件与崩溃恢复 | 本项目控制循环 |
+| 合并、发布、不可逆决定 | 人 |
 
-只读隔离两边不同。Codex 有 `--sandbox read-only`；Claude Code 用工具白名单让协调和规划角色根本拿不到编辑类工具，并为所有可能获得 Bash 的角色强制启用原生 sandbox。命令行 `--settings` 要求 sandbox 不可用时直接失败，且禁止放行未隔离命令。本机尚未安装可直接调用的 Claude CLI，因此本轮对这部分完成了命令构造和策略测试，真实 Claude 端到端仍需在 CLI 可用的机器上验收。
+治理 MCP 不保存 LobeHub Task 或 Topic 的副本，也不具备接受/拒绝、合并、发布或任意 shell
+执行能力。控制循环的本地账本只记录阶段检查点和外部对象 ID，不提供查询/编辑任务的第二套
+产品接口。
 
-还有一处 Claude Code 特有的收口：任务进程不继承操作者配置的 MCP 服务（`--mcp-config '{"mcpServers":{}}' --strict-mcp-config`）。否则那是一片工具白名单看不见的工具面，包括网络出口。
+## 2.2.14 的执行边界
 
-新增执行器要实现的只有三件事：`preflight()`、`build_command()` 和一个把该 CLI 的 stdout 变成事件的解析器。进程监管、超时、环境剥离、提示词脱敏都在 `agent_base.py` 里共享。
+LobeHub 2.2.14 的 Task assignee 是 Provider Agent，而 `lh hetero exec --type codex` 是独立的
+本地 CLI Harness。实测证明，把 `chatgpt` Provider Agent 当成本地 Codex CLI 会进入
+`InvalidProviderAPIKey`；两者不是同一条路径。
 
-`preflight()` 必须真的检查登录，而不只是检查文件存在：`codex login status` 要求 ChatGPT 登录，`claude auth status` 返回 JSON 并校验 `loggedIn`。订阅访问由剥离 API Key 环境变量强制，预检只是让问题在任务开跑前就暴露。
+本项目不修改 LobeHub 源码，也不使用私有 tRPC/数据库接口。在上游提供原生
+Task–heterogeneous 绑定前，使用发布版 CLI 形成可删除的薄适配：
 
-一个执行器不可用时，注册表仍然是就绪的，只要还有别的执行器可用。指定了缺失执行器的任务会带着原因单独失败，自动调度不会因此停摆。
+1. Project Task 保存状态、契约哈希和人的决策点；
+2. 普通 LobeHub Topic 保存冻结契约、harness 事件和最终消息；
+3. Task 评论以稳定 marker 关联 Topic，不复制 Task/Topic 数据；
+4. `execute-topic` 通过本地 ChatGPT 登录的 Codex CLI 执行；
+5. Task 评论还记录可续跑的原生 Codex session，最终文本由发布版 `message edit` 持久化；
+6. 上游原生绑定可用后，只需删除 marker 关联，治理契约不变。
 
-## 额度感知调度
+LobeHub 2.2.14 还有两个已验证的兼容点：
 
-额度调度位于任务图和执行器注册表之间，不触碰供应商凭据：
+- 省略 execution-mode 时，它会为 Codex 注入危险 bypass；适配层因此强制
+  `read-only` 或 `workspace-write`，并在测试中禁止 bypass 字符串；
+- 它生成的 `codex exec resume` 参数顺序与当前 Codex CLI 不兼容；只在 resume
+  时启用一个参数重排 shim，事件转换、进程监督和 ingest 仍由 LobeHub 负责。
 
-```mermaid
-flowchart LR
-    T[Ready 任务] --> P[额度策略]
-    C[Codex App Server<br/>rateLimits/read] --> Q[统一 QuotaSnapshot]
-    A[Claude rate_limit_event] --> Q
-    Q --> P
-    P --> D[执行器 + 模型档位]
-    D --> R[任务运行]
-    R --> A
+首次执行时，LobeHub 转换后的 JSONL 不稳定暴露原生 Codex session。适配层因此启用发布版
+`--raw-dump`，只读取 `thread.started.thread_id` 作为 `continuation_session_id`，写入 Task 评论
+后立即删除受限临时目录。返回值中的 `session_id` 始终表示本次调用传入的 resume ID；二者不应
+混淆。
+
+## 可恢复九步控制循环
+
+`run-governed-task` 是单一主控，不是另一个 Coordinator Agent。它按固定治理状态推进，但每个
+状态内部仍按风险动态决定是否需要新上下文：
+
+| 阶段 | 自动动作 | 可恢复检查点 | 停止条件 |
+| --- | --- | --- | --- |
+| 01 Contract | 编译目标并冻结 SHA-256 契约 | 完整冻结契约 | 缺少可观察验收、安全边界、回滚或信号 |
+| 02 Bind | 创建/核对 Task，建立 Owner Topic | Task、Topic、契约 Message ID | 现有 Task 契约哈希不一致 |
+| 03 Route | 选择最匹配的已有 Topic/Session | 路由解释、Topic、Session ID | 上下文不兼容时改用新 Topic |
+| 04 Quota | 读取本地额度并冻结本轮模型 | 额度模式、Owner/Verifier 模型 | 额度触顶时等刷新 |
+| 05 Owner | 连续 Owner 调查并实现 | user/assistant Message、operation、Session | 高风险材料执行尚未获人确认 |
+| 06 Gates | 运行仓库确定性门禁 | argv、退出码、耗时、脱敏尾部、输出哈希 | 无可用仓库门禁时要求配置 |
+| 07 Falsify | 按质量计划启动只读反证 Lane | 每 Lane Topic、Message、结构化发现 | 门禁失败时跳过，避免浪费 token |
+| 08 Repair | 失败批量回原 Owner，一次返修后全回归 | 返修轮数、门禁和反证结果 | 第二次失败、缺证据或分歧升级给人 |
+| 09 Acceptance | 计算 release readiness 并准备 handoff | 验收标准、最终聚合、人工边界 | 永远停在最终人工 accept/reject 前 |
+
+### 账本与 LobeHub 的一致性
+
+账本默认是 `.data/governed-runs/<run_id>.json`，使用临时文件、`fsync` 和原子替换落盘，并用
+操作系统文件锁阻止两个主控同时推进同一运行。它只保存：
+
+- 当前阶段与每个阶段的 `pending/running/completed/skipped/waiting/interrupted`；
+- LobeHub Task/Topic/Message ID、heterogeneous operation ID 和原生 Codex Session ID；
+- 冻结契约、模型决策、结构化发现和脱敏程序门禁摘要；
+- 带稳定 `event_id` 的状态转换，以及该事件是否已同步到 LobeHub。
+
+状态先写本地账本，再以 `[engineering-governance run-event]` 评论同步到 Task。若评论成功后本地
+进程退出，恢复会先从 Task activities 查找同一个 `event_id`，存在就只补本地确认，不重复评论。
+Task 尚未创建时产生的早期事件会在 Bind 完成后按序补写。
+
+Codex turn 的 prompt message 与 assistant placeholder 也在启动模型前分别落检查点。如果本地在
+LobeHub 已经保存最终 assistant 正文后退出，恢复会直接采用该正文；若仍是占位符，工作范围又
+明确禁止外部/不可逆动作，控制循环才在同一工作契约下从仓库现状继续。已经完成的阶段绝不重跑。
+
+### 权限和返修不变量
+
+- Owner 固定为 `workspace-write + --approve-for-me`，但仍在 Codex 沙箱内；
+- 所有反证 Lane 固定为 `read-only`，fresh-context Lane 必须使用新 Topic 且不继承 Owner Session；
+- 程序门禁用 argv + `shell=False`，拒绝内联解释器、删除、网络搬运、发布、部署和危险 Git
+  命令；执行前后工作区指纹变化会把门禁判为失败；
+- Gate 输出在本机先脱敏，Task 状态事件不携带 stdout/stderr；
+- 自动返修计数在执行返修前落盘，一旦为 1 就不会再开启第二轮；
+- `awaiting_human_acceptance` 是成功终点，绝不伪装成已被人接受或已发布。
+
+## 自托管与身份边界
+
+“不登录 LobeHub Cloud”和“数据库里完全没有用户身份”不是一回事：
+
+- 上游完整应用可以自托管，UI 和数据服务运行在本机；
+- 持久化的 Project/Task/Topic 仍需要一个本地用户 ID 作为数据所有者；
+- 本项目允许暂缓这一步，但暂缓期间只完成代码与配置验证，不宣称 live workflow 已就绪；
+- 不修改上游认证代码，不把本地任务同步到 Cloud，也不配置模型 API Key；
+- 自托管版必须先通过“完整任务/验收能力”和“仅用本地 Codex CLI、零 API Key”两项验收。
+
+`ORCH_LOBEHUB_SERVER` 指定目标实例。默认值仍是上游 CLI 的
+`https://app.lobehub.com`，但当前项目策略不会自动登录它；本机实例准备好后显式设置为
+`http://127.0.0.1:3210`。CLI 登录命令会把 `--server` 精确传给官方 `lh`，避免误登云端。
+
+## 目标编译
+
+`compile_engineering_goal` 只生成契约，不创建第二套任务：
+
+1. 冻结用户结果、非目标、禁止行为、假设、约束和变更面；
+2. 缺少可观察验收、安全边界、恢复路径或高风险可观测信号时返回 `needs_clarification`；
+3. 生成带版本和 SHA-256 哈希的契约，后续受保护字段变化都进入人的决策点；
+4. 固定一个连续 owner Topic；
+5. 按风险与变更面选择需求、架构、测试、安全、供应链、体验、性能、可观测、运维、发布维度；
+6. 自动返修上限固定为一次；分歧、模糊、主观体验、外部影响和最终合并升级给人。
+
+## 上下文路由
+
+`route_to_context` 接收 LobeHub 提供的候选 Topic 摘要，按以下可解释信号评分：
+
+- 相同 Project；
+- 相同仓库；
+- 相同或相邻文件路径；
+- 标题/摘要与当前工作的概念重合；
+- Topic 状态可继续；
+- 显式污染或不兼容标记会大幅扣分。
+
+普通交付/返修达到阈值就继续原 Topic。对抗证伪无条件新建 Topic，避免作者上下文污染
+评判。
+
+## 质量 DAG 与 Acceptance 分离
+
+不是每个任务都走“规划 → 开发 → Review → QA”的固定流水线。验收节点按证据性质生成：
+
+```text
+程序门禁（确定性，不是 Acceptance check）
+  ├─ 失败 → 一次集中返修 → 重跑
+  └─ 通过
+       ├─ 低风险 → owner 自证或自动继续
+       └─ 中高风险 → 按维度新 Topic 只读对抗证伪
+                        ├─ 一致 → 自动继续/最终人验收
+                        └─ 分歧 → 人的决策信箱
 ```
 
-统一快照保存 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at`、数据来源和置信度。Codex 的主桶用于通用模型决策，Spark 等独立桶同时保留给控制台展示；Claude 的事件可能逐个报告五小时、七天或特定模型窗口，因此采用合并快照。
+`aggregate_verification_findings` 只保留置信度至少 80 且有具体证据的发现，并按维度、位置和
+摘要去重。阻断问题一次性回给原 owner，避免 reviewer 一条一条驱动反复返修。
 
-策略先尊重不可变约束：恢复中的会话、任务手工指定和项目默认不会被额度比较改写。只有未固定的任务才在可用执行器间评分。评分以最紧窗口的剩余比例为主，临近刷新加分，长窗口且刷新尚远时略作保留。任务角色、优先级与额度档位共同决定 `high / balanced / economy`，最终由执行器映射为供应商模型名。
+LobeHub Rubric 的 `maxRepairRounds=1` 对应返修上限。Criterion 只表达用户/操作员会接受或拒绝
+的结果；测试、构建、Lint、类型和扫描器是发布前置门禁。官方 Acceptance Skill 负责结构化
+证据、不可变 round、跨轮 lineage 和稳定最终页面，本项目不复制这套状态。
 
-实时额度缺失不是零额度。此时快照明确标记为 unknown，调度器采用谨慎档并轻微偏好部署默认执行器。额度真正触顶时，手工启动返回清楚的刷新提示，自动任务记录 `task.quota_deferred` 并保持可执行，最多每五分钟重新检查一次。已经超过 `resets_at` 的快照不再作为触顶证据；如果所有窗口都过期，状态回到 unknown/cautious，让一个谨慎任务获取新额度事件，而不是永久死锁。
+## Agent 不是岗位
 
-调度决定作为 `task.scheduled` 事件写入账本，任务同时保存 `assigned_executor` 和 `assigned_model`。这既让人能追溯“为什么选它”，也确保有会话 ID 的重试不会跨执行器恢复；原执行器已被禁用时任务明确失败，不会把另一个供应商的模型名传给错误的 CLI。
+Bootstrap 只配置三种逻辑入口，但它们表达上下文性质，不模拟公司组织架构：
 
-## MCP 边界
+- Coordinator：冻结契约、选择上下文和决策点；
+- Delivery Owner：`hetero:codex:workspace-write`，连续持有调查、实现与一次返修；
+- Read-only Falsifier：`hetero:codex:read-only`，临时的新上下文证伪，绝不修改交付。
 
-`orchestrator/mcp_server.py` 让外部对话式客户端（Claude Code、Codex CLI、LobeHub 等）能够驱动这个内核，而不需要它们理解 worktree、依赖图或审批状态机。
+高风险计划可以把 verifier 临时拆成安全、体验或运维等 Lane；这仍是证据隔离，不是“安全部、
+QA 部、测试工程师”等固定角色。
 
-```mermaid
-flowchart LR
-    C[任意 MCP 客户端] -->|stdio JSON-RPC| M[MCP 桥接进程]
-    M -->|回环 HTTP，白名单路径| S[serve 进程]
-    S --> D[(SQLite 事实源)]
-    S --> W[Git worktree 与分支]
-    S --> X[Codex 执行单元]
-    S --> B[本地看板]
-    B --> H[人：审批、评审、合并]
-    M -.深链.-> H
-```
+## 额度
 
-三条不变量：
+`get_codex_quota_advice` 延用经过测试的 Codex App Server 额度读取：只调用
+`account/read` 与 `account/rateLimits/read`，剥离常见 API Key 环境变量，不读取 OAuth
+Token，不发送模型请求。
 
-1. **桥接进程无状态。** 它不打开数据库、不启动调度器、不启动 Codex，因此不存在第二个调度器和 worktree 竞争。`serve` 仍然是唯一写入方。
-2. **接口白名单。** 桥接层持有一份硬编码的 `(方法, 路径)` 白名单，并且拒绝非回环地址。HTTP API 比白名单宽，这是刻意的。
-3. **闸门不进工具面。** 审批、拒绝、评审决定、项目登记、人工消息一律不是工具。需要人决定时，工具返回 `http://127.0.0.1:8765/#/task/<id>` 深链，人在看板上决定。
+额度建议会在 Bootstrap 时为 Coordinator、owner 和 verifier 的逻辑执行策略选择 Codex 模型，也可供
+每个新任务重新咨询。已有 Topic 的连续性优先于换模型；额度触顶则返回刷新时间并建议等待，
+未知额度使用谨慎档。系统不会购买额外用量或消耗 reset credit。
 
-任务只有处于 `backlog` 或 `ready` 时才能进入队列，数据库更新还带状态条件。因此 `review`、`waiting_approval` 等人工闸门状态不能通过 MCP `run_task`、HTTP start 或并发重复请求重新排队。HTTP 控制面同时拒绝非回环 Host、非 JSON 写请求和跨源浏览器写请求；Agent 进程的 OS sandbox 则禁止访问回环控制面。
+## 许可证与升级
 
-`plan_workflow` 会强制把协调者任务的 `allow_delegation` 和 `requires_approval` 设为真，调用方无法关闭：模型可以提出任务图，但任务图在人批准之前不会解锁。
+LobeHub 完整应用作为未修改的外部发行版使用。我们不复制、不派生、不重新分发它的源码，
+只依赖稳定的 Desktop/CLI/MCP/Skill 接口。这样可以直接获得上游 UI 和运行时改进，并避免
+维护一个长期分叉。
 
-MCP 是拉取式的，桥接层没有向客户端主动推送的通道。因此本地看板不是可以删掉的冗余——它仍然是实时监看 Diff 和执行审批的地方；MCP 客户端是对话入口，不是监控面板。
-
-## 失败处理
-
-- Codex 非零退出、结构化结果缺失、Git 冲突或超时：任务进入 `failed`；
-- 依赖未完成：任务保持 `blocked`；
-- Agent 报告外部阻塞：任务进入 `blocked` 并显示原因；
-- 服务在任务运行时退出：下次启动把该任务和运行标记为失败；
-- 失败或阻塞任务可以从看板重试；已有 worktree 和会话会被复用。
-- 运行告警保存在同一事件账本并显示在任务详情；告警聚合只改变呈现，不删除原始证据。
-
-## 当前刻意没有做的事
-
-- 不自动 push、开 PR、合并、发布或部署；
-- 不接任何模型 API，也不管理 API Key；
-- 不给任何执行器 `danger-full-access` 或 `--dangerously-skip-permissions`；
-- 不接 GitHub、Linear、Slack 等云服务；
-- 不通过 MCP 暴露审批、评审、合并、部署和项目登记；
-- 不修改或重新分发外部 Agent 平台的源码，只通过 MCP/CLI 集成；
-- 不提供远程多用户鉴权；
-- 不自动删除 worktree 和 Agent 分支；
-- 不把自然语言 Agent 聊天当成可靠状态，所有关键状态都进入数据库。
-
-这些边界让第一版更适合作为单机研发团队控制台。后续可以在不破坏安全模型的前提下增加 PR/CI 触发器和更多执行端。
+旧版保存在 Git 标签 `legacy-local-orchestrator-v1`，现有 `.data` 不迁移、不删除。待新的
+LobeHub 工作流通过真实开发例子后，再单独决定是否删除兼容代码。

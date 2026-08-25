@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-dev-orchestrator"
-version = "0.1.0"
-description = "Local AI development workflow orchestrator powered by a ChatGPT-authenticated Codex CLI"
+version = "0.4.0"
+description = "Recoverable engineering governance for LobeHub and a ChatGPT-authenticated local Codex CLI"
 requires-python = ">=3.9"
 dependencies = []
 
@@ -17,4 +17,3 @@ packages = ["orchestrator"]
 
 [tool.setuptools.package-data]
 orchestrator = ["static/*", "schemas/*"]
-

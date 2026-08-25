@@ -1,18 +1,22 @@
 # Project instructions
 
-- Keep the runtime dependency-free on Python 3.9+.
-- Never add OpenAI API calls or accept an API key. Codex execution must use the locally authenticated `codex` CLI.
-- Keep the HTTP server bound to loopback by default.
-- Never let an automated task push, merge, delete branches, or use `danger-full-access`.
-- Use isolated Git worktrees for task execution.
-- Preserve human approval gates for architecture, security-sensitive work, and final merge decisions.
-- Never commit a reviewer's edits to tracked files; a reviewer reports, it does not fix.
-- Keep an agent's self-reported checks visible at the human gate, and keep an empty check list visibly empty rather than hidden.
-- A new executor implements preflight, command building and stdout parsing only; process supervision, timeouts, environment stripping and prompt redaction stay shared in `agent_base.py`.
-- No executor may receive `danger-full-access`, `--dangerously-skip-permissions`, or any other permission-bypass flag.
-- An executor without native structured output must have the result contract enforced locally: extract the JSON, check the schema's required fields, and fail the run when they are missing.
-- Keep the MCP bridge stateless: it must not open the database, start the scheduler, or launch Codex.
-- Never expose approval, review decisions, project onboarding, task messages, merge or deploy as MCP tools. Return a board deep link instead.
-- Extend `ALLOWED_ENDPOINTS` in `orchestrator/mcp_server.py` only together with a test asserting the human-only paths stay unreachable.
-- Add or update `unittest` coverage for behavior changes.
-
+- LobeHub is the primary product surface and task runtime. Do not build a second task board, chat UI, task database, topic system, acceptance UI, or heterogeneous-agent wrapper when LobeHub already provides it.
+- LobeHub 2.2.14 does not publicly bind a Task assignee to `hetero exec`. Until upstream adds that surface, link a released-CLI Topic from a Task comment and persist the final harness text with released message commands. Do not use private tRPC or database writes. The resume shim may only reorder LobeHub's incompatible Codex arguments; it must not replace event conversion, supervision or ingest.
+- Treat the upstream LobeHub application as an unmodified external dependency. Integrate through its released Desktop/CLI/MCP/Skill interfaces; do not copy or patch its Community License source into this repository.
+- Prefer an unmodified loopback self-hosted LobeHub deployment when the operator does not want a LobeHub Cloud account. A local identity may own persistent Project/Task/Topic rows; do not try to remove upstream database identity constraints or silently fall back to Cloud.
+- This repository is a thin governance layer: its policy MCP remains stateless. The recoverable `run-governed-task` controller may persist only an execution journal (stage checkpoints, LobeHub ids, native Codex session ids, redacted gate summaries and idempotent event ids) under ignored local data. It must not become a second task board, task database, conversation store or acceptance system.
+- Do not begin material implementation when a compiled work contract is `needs_clarification`; never invent observable acceptance criteria merely to make a task runnable.
+- Freeze the work contract hash. Changes to outcome, acceptance, scope exclusions, prohibitions, risk, safety, rollback or performance boundaries require an explicit human decision.
+- Default to one continuous owner context from investigation through implementation and repair. Create another context only for truly independent parallel work, adversarial falsification, or incompatible/contaminated context.
+- Never decompose work merely to imitate human titles such as project manager, architect, developer, tester, or QA.
+- Prefer deterministic program checks, then fresh-context adversarial checks, then human escalation for ambiguity, disagreement, taste, external effects, irreversible/high-risk changes, and final merge or release.
+- Tests, builds, lint, type checks, CI and scanners are deterministic preconditions and must never be authored as LobeHub Acceptance checks.
+- Independent verification lanes are fresh-context and read-only. They report evidence-backed findings with confidence at least 80 and must never modify delivery files, commits, tasks, configuration or evidence history.
+- Cap automatic repair at one consolidated round. A repeated failure or disagreement goes to the human decision inbox.
+- Never add OpenAI or Anthropic API calls and never accept an API key. Coding execution uses locally authenticated CLI subscription access.
+- Every LobeHub Codex heterogeneous invocation must include an explicit `read-only` or `workspace-write` sandbox. Reject `--dangerously-bypass-approvals-and-sandbox`, `--dangerously-bypass-hook-trust` and `danger-full-access` in code and tests.
+- Never push, merge, deploy, publish, purchase usage, consume reset credits, delete branches, or bypass a permission boundary automatically.
+- Keep the governance MCP server stateless: it may calculate policy and read non-secret local quota telemetry, but it must not duplicate LobeHub task state or impersonate a human acceptance decision.
+- Every governed-loop state transition must be atomically checkpointed and mirrored to the LobeHub Task with an idempotent event id. Resume completed stages instead of rerunning them; reconcile a visible completed assistant message before retrying an interrupted Codex turn.
+- The former Python board is legacy-only. Preserve it for migration/regression until an explicit later removal, but do not add product features to it.
+- Keep the Python runtime dependency-free on Python 3.9+ and add or update `unittest` coverage for behavior changes.

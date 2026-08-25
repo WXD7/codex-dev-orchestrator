@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "project_id": "prj_REPLACE_ME",
+  "name": "实现可观察的版本端点",
+  "repo": "/absolute/path/to/repository",
+  "goal": {
+    "goal": "为服务增加只读版本端点",
+    "user_outcome": "调用方可以读取当前构建版本，并在版本未知时得到明确错误",
+    "acceptance_criteria": [
+      "GET /version 返回当前构建版本",
+      "版本未知时返回文档化的失败响应"
+    ],
+    "non_goals": [
+      "不改变已有写接口"
+    ],
+    "prohibited_behaviors": [
+      "不新增对外网络调用"
+    ],
+    "change_surfaces": [
+      "api"
+    ],
+    "observability_signals": [
+      "版本端点成功和失败日志"
+    ],
+    "risk": "low"
+  },
+  "program_gates": [
+    {
+      "id": "repository_tests",
+      "argv": [
+        "python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-v"
+      ],
+      "timeout": 1800
+    }
+  ],
+  "context_candidates": [],
+  "touched_paths": []
+}
