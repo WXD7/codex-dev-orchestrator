@@ -58,9 +58,13 @@ def parser() -> argparse.ArgumentParser:
     governance_sub = governance.add_subparsers(dest="governance_command", required=True)
     for name, help_text in (
         ("compile", "Compile a raw work contract"),
+        ("resolve", "Compile a proposed hash-bound resolution for contract questions"),
+        ("cases", "Compile a human-confirmed hidden Bad Case registry"),
+        ("calibrate", "Calibrate an Inspector against labelled Good/Bad Cases"),
         ("route", "Build a risk-selected verification plan from a compiled contract"),
         ("contexts", "Build isolated inspector context packets"),
         ("handoff", "Build a side-effect-free Kandev/Codex execution manifest"),
+        ("preflight", "Build a read-only V2 environment capsule for a repository"),
         ("adjudicate", "Adjudicate deterministic results and semantic findings"),
     ):
         item = governance_sub.add_parser(name, help=help_text)
@@ -157,6 +161,11 @@ def main(argv=None) -> int:
     if command == "governance":
         from .delivery_bundle import scaffold_project
         from .governance import GovernanceEngine, integration_blueprint
+        from .governance_learning import (
+            compile_bad_case_registry,
+            compile_inspector_calibration,
+        )
+        from .governance_runtime import build_environment_capsule
 
         engine = GovernanceEngine()
         operation = args.governance_command
@@ -166,8 +175,23 @@ def main(argv=None) -> int:
         source = _read_json_input(args.input)
         if operation == "compile":
             result = engine.compile_contract(source)
+        elif operation == "resolve":
+            result = engine.propose_contract_resolution(
+                source.get("contract") or {},
+                source.get("answers") or [],
+                source.get("field_updates") or {},
+            )
+        elif operation == "cases":
+            result = compile_bad_case_registry(source)
+        elif operation == "calibrate":
+            result = compile_inspector_calibration(source)
         elif operation == "route":
-            result = engine.route(source)
+            if isinstance(source.get("contract"), dict):
+                result = engine.route(
+                    source.get("contract") or {}, source.get("bad_case_registry")
+                )
+            else:
+                result = engine.route(source)
         elif operation == "contexts":
             result = {
                 "contexts": engine.context_packets(
@@ -178,6 +202,10 @@ def main(argv=None) -> int:
             result = engine.delivery_handoff(
                 source.get("contract") or {}, source.get("plan") or {}
             )
+        elif operation == "preflight":
+            contract = source.get("contract") or {}
+            engine._validate_contract(contract)
+            result = build_environment_capsule(Path(str(source.get("repo") or "")), contract)
         elif operation == "adjudicate":
             result = engine.adjudicate(source)
         elif operation == "init":

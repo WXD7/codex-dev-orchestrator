@@ -1,16 +1,24 @@
-# AI Delivery Governance
+# AI Delivery Governance V2.1
 
 这条分支把原来的“自研多 Agent 看板”重构为一层薄而确定的 AI 交付治理能力。它不再复制成熟产品已经做好的 UI、任务、worktree、会话和 CI，而是把真正缺失的部分做成可复用协议：
 
 - 把 Spec Kit 或人类确认过的需求编译成不可静默漂移的工作契约；
+- 用 Question Ledger 记录决策 ID、影响、验收关联、后果、默认方案、负责人、可逆性和答案；
 - 根据风险决定保持单一 Codex 上下文，还是开启哪些独立监察通道；
 - 为每个监察通道生成最小、只读、彼此隔离的上下文；
 - 过滤低置信、不可复现、非本次引入和重复问题；
 - 把有效问题汇总成一次返修包，交回原开发上下文；
+- 用环境 capsule 在开工前核对 cwd、真实 Diff 根、权限、PATH、端口和锁；
+- 用控制器签名的原子阶段账本恢复中断，并用真实产物不变量决定是否推进；
+- 用中文短名、实时进展、当前困难、依赖、心跳和来源任务统一观察 Agent，且把“执行状态”和“交付裁决”分开；
+- 默认启用领域语义、状态/信任边界、测试预言机三条正交监察，再按风险扩展；
+- 全量复验后由一个看不到旧对话和旧发现的全新只读 verifier 盲审 must-kill 反例；
+- 把人工确认的 Bad Case 编译成隐藏回归案例，新/变更 Inspector 先影子运行并用 Good/Bad Case 校准；
+- 从签名账本生成 Review Packet，让人看到证据哈希、阻塞点、影子发现和仍需作出的决定；
 - 第二次仍不收敛、存在争议或即将产生外部/不可逆效果时交给人；
 - 通过无状态 MCP 同时服务 LobeHub、Kandev、Symphony 和 Codex。
 
-它不调用模型 API，不接受 API Key，也不持有任务、审批、分支或 Agent 会话。
+它不调用模型 API，不接受模型 API Key，也不持有任务、审批、分支或 Agent 会话。V2.1 的窄运行账本由外部可信控制器持有，只保存阶段产物摘要、签名事件、Agent 进展和恢复指标；控制令牌绝不交给 Agent。
 
 ## 组合架构
 
@@ -29,12 +37,15 @@
 ```text
 LobeHub 接收目标和人类决定
   → Spec Kit 澄清并形成规格
-  → 本治理层编译契约和风险计划
+  → 本治理层编译 Question Ledger、契约和风险计划
+  → 人类答案形成 delta，可信控制器签名并绑定同一外部任务
+  → 环境 capsule 证明 cwd、权限、工具、端口、锁和真实 Diff 根
   → Kandev 或 Symphony 驱动本地 Codex
   → 确定性 CI 先运行
-  → 只开启风险需要的独立监察上下文
-  → 本治理层裁决证据并生成一次返修包
-  → 全量复验
+  → 三条正交监察 + 风险扩展通道独立反证
+  → 新/变更 Inspector 先以 shadow 模式校准
+  → 本治理层跨通道合并根因并生成一次返修包
+  → 全量复验 + 全新上下文盲审 must-kill 反例
   → 人决定最终合并或发布
 ```
 
@@ -54,6 +65,13 @@ python3 run.py governance route --input /tmp/legal-billing-contract.json \
   --output /tmp/legal-billing-verification.json
 ```
 
+对真实目标仓库做只读环境预检（输入包含 `repo`、已编译 `contract`）：
+
+```bash
+python3 run.py governance preflight --input contract-and-repo.json \
+  --output /tmp/environment-capsule.json
+```
+
 把契约和计划编译成 Kandev/Codex 可消费、但尚未执行任何外部写操作的交接清单：
 
 ```bash
@@ -69,7 +87,7 @@ python3 run.py governance init \
   --input examples/legal-billing-contract-source.json
 ```
 
-该命令只创建 `.ai-delivery/`，且拒绝覆盖已有文件。里面包含契约、验证计划、Kandev/Codex 交接清单、Kandev 运行手册、项目宪法、集成边界和可纳入真实 Symphony `WORKFLOW.md` 的策略片段。
+该命令只创建 `.ai-delivery/`，且拒绝覆盖已有文件。V2.1 额外生成 `runtime-protocol.json`、`bad-case-registry.json` 和 `calibration-policy.json`，记录问题恢复、原子检查点、实时监控、遥测、盲审和学习闭环协议。
 
 ## 接入 LobeHub 或 Kandev
 
@@ -79,24 +97,29 @@ python3 run.py governance init \
 python3 run.py governance-mcp
 ```
 
-MCP 暴露六个纯计算工具：
+MCP 暴露九个纯计算工具：
 
 | 工具 | 作用 |
 | --- | --- |
 | `compile_work_contract` | 契约编译、追问缺口、风险信号 |
+| `propose_contract_resolution` | 把人类/专家答案编译成待可信控制器签名的契约 delta |
+| `compile_bad_case_registry` | 把人工确认的 Good/Bad Case 编译成版本化隐藏回归表 |
+| `calibrate_inspector` | 计算召回、误报、人机一致和独立贡献，决定 shadow/blocking 资格 |
 | `plan_delivery` | 动态选择确定性和语义监察通道 |
 | `build_inspector_contexts` | 生成最小只读隔离上下文 |
 | `build_delivery_handoff` | 生成 owner、监察任务、Profile 边界、顺序和人类闸门的 Kandev/Codex 清单 |
 | `adjudicate_delivery` | 去重、过滤、阻塞判断和一次返修包 |
 | `get_integration_blueprint` | 返回各成熟组件的所有权边界 |
 
-这组工具不能运行 Agent、修改任务、批准、写代码、push、合并或部署。LobeHub 继续持有人类界面，Kandev 继续持有研发任务和 worktree。
+这组工具不能运行 Agent、修改任务、批准、写代码、push、合并或部署。契约 delta 的最终 HMAC attestation、运行账本、实时快照和 Review Packet 只在可信控制器运行库中完成，不进入 MCP。LobeHub 继续持有人类界面，Kandev 继续持有研发任务和 worktree。
 
 项目级 Codex Skill 位于 `.agents/skills/ai-delivery-governance/`，把契约、验证和证据裁决规则带入兼容 Agent。
 
 详细说明见：
 
+- [V2.1 版本说明](CHANGELOG.md)
 - [新架构](docs/ARCHITECTURE.md)
+- [V2.1 融合实现与德国计费回放](docs/V2_IMPLEMENTATION.md)
 - [产品与质量需求](docs/AI_NATIVE_DELIVERY_REQUIREMENTS.md)
 - [成熟组件集成](docs/INTEGRATION.md)
 - [从旧编排台迁移](docs/MIGRATION.md)

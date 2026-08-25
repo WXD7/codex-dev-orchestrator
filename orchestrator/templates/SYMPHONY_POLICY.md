@@ -11,10 +11,21 @@ Before starting implementation, read:
 - `.ai-delivery/CONSTITUTION.md`
 - `.ai-delivery/contract.json`
 - `.ai-delivery/verification-plan.json`
+- `.ai-delivery/runtime-protocol.json`
+- `.ai-delivery/bad-case-registry.json`
+- `.ai-delivery/calibration-policy.json`
 
 If the contract status is not `ready`, stop at the human clarification state and
 report the unanswered questions. Never infer answers merely to keep the workflow
-moving.
+moving. A returned answer only creates a delta proposal. Before owner creation,
+the trusted runner records a human attestation that binds the old contract, delta,
+new contract, new plan, and the same tracker issue. This runtime signature is not
+an MCP approval tool.
+
+Before the owner starts, require a ready environment capsule covering cwd, the
+real Git diff root, permissions, commands, ports, and locks. The trusted runner
+owns the signed atomic checkpoint ledger; its control token must never enter a
+Codex prompt. Advance only when declared artifact invariants pass.
 
 ## Owner execution
 
@@ -25,6 +36,13 @@ governance policy.
 
 Run all required deterministic checks before independent semantic inspection.
 A required check that cannot run is a failed gate, not a silent pass.
+
+Use short Chinese Agent display names. On every state change and periodic
+heartbeat, append a signed progress event with mission, execution state, progress,
+current difficulty, dependency, human need, enforcement mode, and source
+task/session. Expose the controller snapshot through the existing tracker/task
+surface; do not create another task database or dashboard. Never collapse Agent
+execution state and delivery verdict into one status.
 
 ## Independent inspection
 
@@ -38,9 +56,21 @@ high-signal, introduced-by-change findings. Return one deduplicated repair packa
 to the original owner, rerun all evidence once, then stop for a human if it still
 does not converge.
 
+Confirmed Bad Cases require named human/expert confirmation and reproducible
+evidence before they enter the hidden must-kill registry. New or materially
+changed Inspectors run in shadow mode until a hash-bound Good/Bad Case calibration
+profile passes every threshold. Shadow findings remain visible but cannot create
+a blocker. Calibration never grants merge or release authority.
+
+After full re-verification, create a new read-only final verifier that cannot see
+the owner transcript or prior findings. It must pass all must-kill cases. A final
+verifier failure stops for a human and does not authorize a second repair round.
+
 ## Human handoff
 
 Stop for a human on contract ambiguity, disputed high-risk evidence, security or
 architecture policy choices, external or irreversible actions, experience/taste,
 and final merge or release. A successful agent run reaches the configured handoff
-state; it does not grant its own acceptance.
+state; it does not grant its own acceptance. Build the human Review Packet from
+the signed ledger, showing evidence hashes, Agent progress/difficulties,
+calibration modes, and the exact decision that still belongs to the human.

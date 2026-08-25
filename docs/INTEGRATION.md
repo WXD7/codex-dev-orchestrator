@@ -22,7 +22,7 @@
 }
 ```
 
-LobeHub 可保存和展示契约、计划和裁决结果，但批准仍由其人类身份和界面完成。治理 MCP 不提供批准工具。
+LobeHub 可保存和展示契约、计划、Operator Snapshot、Review Packet 和裁决结果，但批准仍由其人类身份和界面完成。治理 MCP 不提供批准工具。Agent 监控应投影到现有 Project/Task 页面，不再开发另一套看板。
 
 上游：[LobeHub](https://github.com/lobehub/lobehub)
 
@@ -33,11 +33,15 @@ LobeHub 可保存和展示契约、计划和裁决结果，但批准仍由其人
 推荐组合：
 
 1. LobeHub 形成目标并调用 `compile_work_contract`。
-2. 契约未就绪时只显示追问，不创建可写开发任务。
-3. 就绪契约和验证计划作为 Kandev 任务附件或仓库 `.ai-delivery/` 文件。
-4. 调用 `build_delivery_handoff`，Kandev 只创建其中的主要开发 owner；确定性证据全部通过后，才按清单创建新的只读监察任务。
-5. Kandev 的 Diff、测试和检查工件进入 `adjudicate_delivery`。
-6. 返修只交回原 owner 会话；第二轮停止。
+2. 只把未解决的政策选择和领域事实显示为追问；工程不变量和可研究事实进入 owner/研究路线。
+3. 契约未就绪时不创建可写开发任务。人类回答经 `propose_contract_resolution` 形成 delta 后，由 Kandev 侧可信控制器签名绑定父契约、新契约、新计划和原 Kandev task；attestation 不通过 MCP。
+4. Kandev 侧先运行环境 capsule，确认 cwd、真实 Diff 根、权限、PATH、端口和锁。
+5. 控制器创建原子签名 ledger，把私有 control token 隔离在所有 Agent 上下文之外。
+6. 就绪契约、验证计划、Bad Case registry 和 calibration policy 作为 Kandev 任务附件或仓库 `.ai-delivery/` 文件。
+7. 调用 `build_delivery_handoff`，Kandev 只创建其中的主要开发 owner；确定性证据全部通过后，才按清单创建新的只读监察任务。
+8. 每次状态变化/心跳调用 `record_agent_progress()`；Kandev/LobeHub 用 `build_operator_snapshot()` 显示唯一 Agent 数、中文名、进展、困难、依赖、来源 task/session 和 shadow/blocking 模式。
+9. Kandev 的 Diff、测试和结构化复现包进入 `adjudicate_delivery`，跨通道同根因合并。新/变更 Inspector 的未校准发现保持可见但不阻塞。
+10. 返修只交回原 owner 会话；完整复验后新建盲审 verifier；再次失败停止。最后用 `build_human_review_packet()` 交给人，而不是把 Agent 完成态当批准。
 
 Kandev MCP 中的任务创建、分支和交接仍由 Kandev 自己执行，本治理层不保存它们的镜像。
 
@@ -58,6 +62,8 @@ Kandev MCP 中的任务创建、分支和交接仍由 Kandev 自己执行，本�
 `governance init` 生成 `.ai-delivery/SYMPHONY_POLICY.md`。它是策略片段，不伪造 tracker、workspace、Codex 命令、并发和 hook 等部署配置。把片段纳入根据真实环境配置的 `WORKFLOW.md`。
 
 Symphony 的成功表示到达下一交接状态，例如 Human Review；不代表 Agent 可以把任务自行标为最终接受。
+
+Symphony 的 tracker issue ID 应作为 `external_task_ref` 进入契约恢复 attestation。其生命周期 hook 负责签名进展心跳和 Review Packet 投影；治理 MCP 仍只做纯编译/裁决，不能签名、恢复任务或证明用户身份。
 
 上游：[Symphony 规范](https://github.com/openai/symphony/blob/main/SPEC.md)
 

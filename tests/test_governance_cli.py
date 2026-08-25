@@ -51,7 +51,7 @@ class GovernanceCLITests(unittest.TestCase):
         self.assertEqual(plan["contract_hash"], contract["contract_hash"])
         self.assertTrue(contexts["contexts"])
         self.assertEqual(handoff["status"], "ready_for_control_plane")
-        self.assertEqual(verdict["decision"], "ready_for_human_merge")
+        self.assertEqual(verdict["decision"], "ready_for_final_verification")
 
     def test_blueprint_and_init_are_stateless_and_do_not_overwrite(self):
         output = io.StringIO()
@@ -85,9 +85,11 @@ class GovernanceCLITests(unittest.TestCase):
             self.assertEqual(status, 0)
             result = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(result["contract_status"], "ready")
-            self.assertEqual(len(result["files"]), 7)
+            self.assertEqual(len(result["files"]), 10)
             self.assertTrue((repo / ".ai-delivery" / "integrations.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "delivery-handoff.json").is_file())
+            self.assertTrue((repo / ".ai-delivery" / "bad-case-registry.json").is_file())
+            self.assertTrue((repo / ".ai-delivery" / "calibration-policy.json").is_file())
             with self.assertRaisesRegex(FileExistsError, "no files were changed"):
                 main(
                     [
@@ -99,6 +101,63 @@ class GovernanceCLITests(unittest.TestCase):
                         str(source),
                     ]
                 )
+
+    def test_preflight_builds_a_ready_capsule_without_mutating_repo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = make_git_repo(Path(directory))
+            contract = self.call_with_stdin(
+                ["governance", "compile"], ready_source(environment={"required_commands": ["git"]})
+            )
+            capsule = self.call_with_stdin(
+                ["governance", "preflight"],
+                {"repo": str(repo), "contract": contract},
+            )
+
+        self.assertEqual(capsule["status"], "ready")
+        self.assertEqual(capsule["repository_root"], capsule["diff_root"])
+        self.assertEqual(capsule["commands"][0]["name"], "git")
+
+    def test_question_resolution_cases_and_calibration_are_pure_cli_operations(self):
+        contract = self.call_with_stdin(
+            ["governance", "compile"],
+            ready_source(
+                uncertainties=[
+                    {
+                        "decision_id": "choice",
+                        "category": "policy_choice",
+                        "statement": "Choose one policy",
+                        "state": "unknown",
+                        "impact": "high",
+                    }
+                ]
+            ),
+        )
+        proposal = self.call_with_stdin(
+            ["governance", "resolve"],
+            {
+                "contract": contract,
+                "answers": [
+                    {
+                        "decision_id": "choice",
+                        "answer": "Use the strict policy",
+                        "answered_by": "owner",
+                        "authority": "human",
+                    }
+                ],
+            },
+        )
+        registry = self.call_with_stdin(
+            ["governance", "cases"],
+            {"registry_id": "empty", "cases": []},
+        )
+        profile = self.call_with_stdin(
+            ["governance", "calibrate"],
+            {"lane_id": "security", "evaluations": []},
+        )
+
+        self.assertEqual(proposal["proposed_contract"]["status"], "ready")
+        self.assertEqual(registry["metrics"]["total"], 0)
+        self.assertEqual(profile["mode"], "shadow")
 
 
 if __name__ == "__main__":

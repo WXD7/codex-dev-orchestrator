@@ -47,6 +47,12 @@ class ContractTests(unittest.TestCase):
                 "deterministic_evidence",
             },
         )
+        for question in contract["question_gate"]["blocking_questions"]:
+            self.assertEqual(question["decision_id"], question["id"])
+            self.assertEqual(question["impact"], "high")
+            self.assertIn("decision_owner", question)
+            self.assertIn("reversible", question)
+            self.assertIn("consequence", question)
 
     def test_contract_hash_is_stable_and_changes_with_intent(self):
         first = self.engine.compile_contract(ready_source())
@@ -101,6 +107,141 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "integrity check failed"):
             self.engine.route(changed_risk)
 
+    def test_question_gate_interrupts_only_for_policy_and_domain_uncertainty(self):
+        contract = self.engine.compile_contract(
+            ready_source(
+                uncertainties=[
+                    {
+                        "id": "policy",
+                        "category": "policy_choice",
+                        "statement": "Choose whether legacy clients remain supported",
+                        "question": "Must legacy clients remain supported?",
+                        "status": "unresolved",
+                    },
+                    {
+                        "id": "invariant",
+                        "category": "engineering_invariant",
+                        "statement": "The real Git diff root must match the assigned root",
+                        "status": "unresolved",
+                    },
+                    {
+                        "id": "research",
+                        "category": "researchable_fact",
+                        "statement": "The installed Kandev profile shape must be discovered",
+                        "status": "unresolved",
+                    },
+                ]
+            )
+        )
+
+        self.assertEqual(contract["status"], "needs_clarification")
+        self.assertEqual([item["id"] for item in contract["clarifications"]], ["policy"])
+        routes = {
+            item["id"]: item["route"]
+            for item in contract["question_gate"]["non_blocking_routes"]
+        }
+        self.assertEqual(routes["invariant"], "prove_from_repository")
+        self.assertEqual(routes["research"], "research_without_interrupting_owner")
+
+    def test_question_ledger_binds_impact_acceptance_and_resolution_delta(self):
+        contract = self.engine.compile_contract(
+            ready_source(
+                uncertainties=[
+                    {
+                        "decision_id": "activity-cardinality",
+                        "category": "policy_choice",
+                        "statement": "程序活动是单值还是集合",
+                        "question": "允许多个程序活动并存吗？",
+                        "state": "contested",
+                        "impact": "high",
+                        "acceptance_ids": ["typed-facts"],
+                        "consequence": "不同答案会改变 Schema 和 UI",
+                        "proposed_default": "使用集合",
+                        "decision_owner": "human",
+                        "reversible": False,
+                    }
+                ]
+            )
+        )
+
+        self.assertEqual(contract["status"], "needs_clarification")
+        question = contract["question_gate"]["blocking_questions"][0]
+        self.assertEqual(question["decision_id"], "activity-cardinality")
+        self.assertEqual(question["acceptance_ids"], ["typed-facts"])
+
+        proposal = self.engine.propose_contract_resolution(
+            contract,
+            [
+                {
+                    "decision_id": "activity-cardinality",
+                    "answer": "允许多个程序活动并存",
+                    "answered_by": "product-owner",
+                    "authority": "human",
+                    "evidence": "用户在需求闸门中确认",
+                }
+            ],
+        )
+
+        self.assertEqual(proposal["status"], "awaiting_human_attestation")
+        self.assertFalse(proposal["resume"]["allowed_now"])
+        self.assertEqual(proposal["proposed_contract"]["status"], "ready")
+        self.assertNotEqual(
+            proposal["delta"]["parent_contract_hash"],
+            proposal["delta"]["proposed_contract_hash"],
+        )
+
+    def test_low_impact_reversible_assumption_is_visible_but_nonblocking(self):
+        contract = self.engine.compile_contract(
+            ready_source(
+                uncertainties=[
+                    {
+                        "decision_id": "label-copy",
+                        "category": "policy_choice",
+                        "statement": "按钮文案使用哪个同义词",
+                        "state": "assumed",
+                        "impact": "low",
+                        "proposed_default": "提交",
+                        "decision_owner": "human",
+                        "reversible": True,
+                    }
+                ]
+            )
+        )
+
+        self.assertEqual(contract["status"], "ready")
+        self.assertEqual(
+            contract["question_gate"]["non_blocking_routes"][0]["decision_id"],
+            "label-copy",
+        )
+
+    def test_delegated_high_impact_decision_remains_blocking(self):
+        contract = self.engine.compile_contract(
+            ready_source(
+                uncertainties=[
+                    {
+                        "decision_id": "delegated-policy",
+                        "category": "policy_choice",
+                        "statement": "Human owner must choose the policy",
+                        "state": "delegated",
+                        "impact": "high",
+                        "decision_owner": "human",
+                    }
+                ]
+            )
+        )
+
+        self.assertEqual(contract["status"], "needs_clarification")
+        self.assertEqual(
+            contract["question_gate"]["blocking_questions"][0]["decision_id"],
+            "delegated-policy",
+        )
+
+    def test_empty_contract_resolution_is_rejected(self):
+        contract = self.engine.compile_contract(ready_source())
+
+        with self.assertRaisesRegex(ValueError, "must change"):
+            self.engine.propose_contract_resolution(contract, [])
+
 
 class RoutingTests(unittest.TestCase):
     def setUp(self):
@@ -131,9 +272,9 @@ class RoutingTests(unittest.TestCase):
         self.assertTrue(
             {
                 "deterministic-ci",
-                "requirement-conformance",
-                "code-architecture",
-                "test-quality",
+                "contract-domain-semantics",
+                "state-trust-boundaries",
+                "test-oracle-falsification",
                 "security",
                 "data-compatibility",
                 "e2e-ux",
@@ -145,6 +286,16 @@ class RoutingTests(unittest.TestCase):
             self.assertFalse(lane["write_access"])
             self.assertFalse(lane["peer_findings_visible"])
         self.assertIn("high_risk_policy_and_release", plan["human_gates"])
+        self.assertEqual(
+            [
+                "contract-domain-semantics",
+                "state-trust-boundaries",
+                "test-oracle-falsification",
+            ],
+            [lane["id"] for lane in plan["lanes"][1:4]],
+        )
+        self.assertEqual(plan["sequence"][-2:], ["blind_final_verification", "human_handoff"])
+        self.assertEqual(plan["checkpoint_policy"]["agent_access_to_control_token"], False)
 
     def test_context_packets_are_minimal_read_only_and_hash_bound(self):
         contract = self.engine.compile_contract(ready_source())
@@ -206,7 +357,7 @@ class AdjudicationTests(unittest.TestCase):
             "reproduction": "Request tenant B record id while authenticated as tenant A",
             "introduced_by_change": True,
         }
-        duplicate = dict(finding, id="req-2", lane="requirement-conformance", confidence=85)
+        duplicate = dict(finding, id="req-2", lane="contract-domain-semantics", confidence=85)
         verdict = self.engine.adjudicate(self.payload(findings=[finding, duplicate]))
 
         self.assertEqual(verdict["decision"], "repair_once")
@@ -246,7 +397,7 @@ class AdjudicationTests(unittest.TestCase):
         ]
         verdict = self.engine.adjudicate(self.payload(findings=findings))
 
-        self.assertEqual(verdict["decision"], "ready_for_human_merge")
+        self.assertEqual(verdict["decision"], "ready_for_final_verification")
         self.assertEqual(len(verdict["rejected_findings"]), 3)
 
     def test_required_ci_failure_blocks_and_second_round_escalates(self):
@@ -301,7 +452,7 @@ class AdjudicationTests(unittest.TestCase):
         ]
         verdict = self.engine.adjudicate(self.payload(findings=findings))
 
-        self.assertEqual(verdict["decision"], "ready_for_human_merge")
+        self.assertEqual(verdict["decision"], "ready_for_final_verification")
         self.assertEqual(
             {item["rejected_reason"] for item in verdict["rejected_findings"]},
             {"lane_not_enabled_by_plan", "introduced_by_change_unproven"},
@@ -320,6 +471,51 @@ class AdjudicationTests(unittest.TestCase):
         }
         verdict = self.engine.adjudicate(self.payload(findings=[finding]))
         self.assertEqual(verdict["decision"], "human_decision")
+
+    def test_cross_lane_root_cause_is_merged_into_one_repair_item(self):
+        common = {
+            "severity": "high",
+            "confidence": 0.95,
+            "introduced_by_change": True,
+            "root_cause_key": "typed-correction-trust-boundary",
+            "violated_invariant": "Corrections retain their declared type",
+            "counterexample": "Submit integer 0 through the Boolean-only UI",
+            "artifact_refs": ["tests/correction-e2e.json"],
+            "reproduction": {
+                "preconditions": ["Open correction form"],
+                "steps": ["Submit integer 0"],
+                "expected": "Integer 0 is stored",
+                "actual": "The UI cannot submit it",
+            },
+            "evidence": "Browser trace and API response disagree",
+        }
+        findings = [
+            dict(common, id="state-1", lane="state-trust-boundaries", title="Typed correction is lost"),
+            dict(common, id="oracle-1", lane="test-oracle-falsification", title="E2E misses typed correction"),
+        ]
+        verdict = self.engine.adjudicate(
+            self.payload(
+                findings=findings,
+                inspector_telemetry=[
+                    {
+                        "lane": "state-trust-boundaries",
+                        "duration_ms": 1200,
+                        "input_tokens": 300,
+                        "output_tokens": 90,
+                    }
+                ],
+            )
+        )
+
+        self.assertEqual(verdict["decision"], "repair_once")
+        self.assertEqual(len(verdict["repair_package"]["root_causes"]), 1)
+        self.assertEqual(
+            set(verdict["repair_package"]["root_causes"][0]["contributing_lanes"]),
+            {"state-trust-boundaries", "test-oracle-falsification"},
+        )
+        state_metrics = verdict["metrics"]["per_inspector"]["state-trust-boundaries"]
+        self.assertEqual(state_metrics["duration_ms"], 1200)
+        self.assertEqual(state_metrics["input_tokens"], 300)
 
 
 class IntegrationAndScaffoldTests(unittest.TestCase):
@@ -341,6 +537,23 @@ class IntegrationAndScaffoldTests(unittest.TestCase):
             self.assertTrue((repo / ".ai-delivery" / "contract.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "verification-plan.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "delivery-handoff.json").is_file())
+            registry = json.loads(
+                (repo / ".ai-delivery" / "bad-case-registry.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            protocol = json.loads(
+                (repo / ".ai-delivery" / "runtime-protocol.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(protocol["schema_version"], "2.1")
+            self.assertEqual(
+                protocol["bad_case_registry_hash"], registry["registry_hash"]
+            )
+            self.assertTrue(
+                protocol["contract_resolution"]["human_delta_attestation_required"]
+            )
             content = (repo / ".ai-delivery" / "CONSTITUTION.md").read_text(
                 encoding="utf-8"
             )

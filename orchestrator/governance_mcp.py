@@ -12,12 +12,16 @@ import sys
 from typing import Any, Dict, List, Mapping, Optional, TextIO
 
 from .governance import GovernanceEngine, integration_blueprint
+from .governance_learning import (
+    compile_bad_case_registry,
+    compile_inspector_calibration,
+)
 
 
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_NAME = "ai-delivery-governance"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.4.0"
 
 
 class GovernanceToolError(ValueError):
@@ -52,8 +56,165 @@ TOOLS: List[Dict[str, Any]] = [
                 "deterministic_checks": {"type": "array", "items": {"type": "string"}},
                 "change_types": {"type": "array", "items": {"type": "string"}},
                 "risk_flags": {"type": "array", "items": {"type": "string"}},
+                "environment": {
+                    "type": "object",
+                    "properties": {
+                        "required_commands": {"type": "array", "items": {"type": "string"}},
+                        "required_ports": {"type": "array", "items": {"type": "integer"}},
+                    },
+                    "additionalProperties": False,
+                },
+                "uncertainties": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "decision_id": {"type": "string"},
+                            "category": {
+                                "type": "string",
+                                "enum": [
+                                    "policy_choice",
+                                    "domain_fact",
+                                    "engineering_invariant",
+                                    "researchable_fact",
+                                ],
+                            },
+                            "statement": {"type": "string"},
+                            "question": {"type": "string"},
+                            "status": {
+                                "type": "string",
+                                "enum": [
+                                    "unresolved",
+                                    "resolved",
+                                    "expert_confirmed",
+                                    "repository_proven",
+                                    "researched",
+                                    "known",
+                                    "assumed",
+                                    "unknown",
+                                    "contested",
+                                    "delegated",
+                                    "blocked",
+                                ],
+                            },
+                            "state": {
+                                "type": "string",
+                                "enum": [
+                                    "unresolved",
+                                    "resolved",
+                                    "expert_confirmed",
+                                    "repository_proven",
+                                    "researched",
+                                    "known",
+                                    "assumed",
+                                    "unknown",
+                                    "contested",
+                                    "delegated",
+                                    "blocked",
+                                ],
+                            },
+                            "impact": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high", "critical"],
+                            },
+                            "acceptance_id": {"type": "string"},
+                            "acceptance_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "consequence": {"type": "string"},
+                            "proposed_default": {"type": "string"},
+                            "decision_owner": {
+                                "type": "string",
+                                "enum": [
+                                    "human",
+                                    "domain_expert",
+                                    "agent",
+                                    "deterministic_rule",
+                                ],
+                            },
+                            "reversible": {"type": "boolean"},
+                            "answer": {"type": "string"},
+                            "evidence": {"type": "string"},
+                        },
+                        "required": ["category", "statement"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required_evidence_classes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["property_test", "mutation_test", "browser_e2e"],
+                    },
+                },
+                "must_kill_cases": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "counterexample": {"type": "string"},
+                            "expected": {"type": "string"},
+                        },
+                        "required": ["title", "counterexample", "expected"],
+                        "additionalProperties": False,
+                    },
+                },
             },
             "required": ["goal"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "propose_contract_resolution",
+        "description": (
+            "Compile human-authored answers into a hash-bound contract delta. "
+            "The proposal cannot attest approval, resume a task, or start an owner."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "contract": {"type": "object"},
+                "answers": {"type": "array", "items": {"type": "object"}},
+                "field_updates": {"type": "object"},
+            },
+            "required": ["contract", "answers"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "compile_bad_case_registry",
+        "description": (
+            "Compile human-confirmed Good/Bad Cases into a hidden hash-bound registry. "
+            "This tool cannot promote a candidate without supplied human confirmation evidence."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "registry_id": {"type": "string"},
+                "cases": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["registry_id", "cases"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "calibrate_inspector",
+        "description": (
+            "Measure one Inspector against human-labelled cases. It remains shadow-only "
+            "unless every frozen recall, false-positive, agreement, and contribution threshold passes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "lane_id": {"type": "string"},
+                "evaluations": {"type": "array", "items": {"type": "object"}},
+                "policy": {"type": "object"},
+            },
+            "required": ["lane_id", "evaluations"],
             "additionalProperties": False,
         },
     },
@@ -65,7 +226,10 @@ TOOLS: List[Dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"contract": {"type": "object"}},
+            "properties": {
+                "contract": {"type": "object"},
+                "bad_case_registry": {"type": "object"},
+            },
             "required": ["contract"],
             "additionalProperties": False,
         },
@@ -115,6 +279,11 @@ TOOLS: List[Dict[str, Any]] = [
                 "plan": {"type": "object"},
                 "deterministic_results": {"type": "array", "items": {"type": "object"}},
                 "findings": {"type": "array", "items": {"type": "object"}},
+                "inspector_telemetry": {"type": "array", "items": {"type": "object"}},
+                "inspector_calibrations": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
                 "repair_round": {"type": "integer", "minimum": 0},
             },
             "required": ["contract", "plan", "deterministic_results", "findings"],
@@ -136,8 +305,21 @@ def call_tool(name: str, arguments: Mapping[str, Any]) -> Dict[str, Any]:
     engine = GovernanceEngine()
     if name == "compile_work_contract":
         return engine.compile_contract(arguments)
+    if name == "propose_contract_resolution":
+        return engine.propose_contract_resolution(
+            _object(arguments.get("contract"), "contract"),
+            arguments.get("answers") or [],
+            arguments.get("field_updates") or {},
+        )
+    if name == "compile_bad_case_registry":
+        return compile_bad_case_registry(arguments)
+    if name == "calibrate_inspector":
+        return compile_inspector_calibration(arguments)
     if name == "plan_delivery":
-        return engine.route(_object(arguments.get("contract"), "contract"))
+        return engine.route(
+            _object(arguments.get("contract"), "contract"),
+            arguments.get("bad_case_registry"),
+        )
     if name == "build_inspector_contexts":
         contract = _object(arguments.get("contract"), "contract")
         plan = _object(arguments.get("plan"), "plan")

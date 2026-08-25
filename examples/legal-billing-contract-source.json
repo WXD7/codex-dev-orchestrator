@@ -54,5 +54,59 @@
     "privacy",
     "public_api",
     "user_experience"
+  ],
+  "environment": {
+    "required_commands": [
+      "git",
+      "python3"
+    ],
+    "required_ports": []
+  },
+  "required_evidence_classes": [
+    "property_test",
+    "mutation_test",
+    "browser_e2e"
+  ],
+  "uncertainties": [
+    {
+      "id": "legal-authority-approval",
+      "category": "domain_fact",
+      "statement": "只有经过法律专家确认的法源版本和黄金案例才能自动计算。",
+      "question": "法律专家已批准哪些法源版本、规则和黄金案例进入自动计算范围？",
+      "status": "resolved",
+      "evidence": "本次契约把未批准规则明确留在 REVIEW_REQUIRED，批准清单仍由仓库的法源登记表决定。"
+    },
+    {
+      "id": "typed-correction-invariant",
+      "category": "engineering_invariant",
+      "statement": "修正必须保留 Boolean、Integer、Decimal 和 String 的类型，且不能用单字符子串冒充修正证据。",
+      "status": "unresolved"
+    },
+    {
+      "id": "kandev-runtime-shape",
+      "category": "researchable_fact",
+      "statement": "当前 Kandev 安装的 Profile、cwd、PATH、端口和锁状态必须在运行时探测，不能由契约猜测。",
+      "status": "unresolved"
+    }
+  ],
+  "must_kill_cases": [
+    {
+      "id": "audit-replay-forgery",
+      "title": "重算内容哈希不能伪造审计 replay",
+      "counterexample": "修改审计内容并重算普通 SHA-256 后尝试 replay。",
+      "expected": "没有控制器私有签名时 replay 必须失败。"
+    },
+    {
+      "id": "substring-correction-evidence",
+      "title": "单字符子串不能作为修正证据",
+      "counterexample": "把 10000 修正为 0，并只提交原字符串中存在字符 0 作为证据。",
+      "expected": "系统必须拒绝弱子串证据，并要求类型化的新值、原值、理由和来源。"
+    },
+    {
+      "id": "typed-ui-correction-roundtrip",
+      "title": "UI 支持 Boolean 与 Integer 类型化修正",
+      "counterexample": "从浏览器提交 Boolean false 和 Integer 0，再重新载入复核记录。",
+      "expected": "类型和值在提交、存储、重载和审计中保持不变。"
+    }
   ]
 }

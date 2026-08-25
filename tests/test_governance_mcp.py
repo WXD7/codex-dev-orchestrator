@@ -15,6 +15,9 @@ class GovernanceMCPTests(unittest.TestCase):
             names,
             {
                 "compile_work_contract",
+                "propose_contract_resolution",
+                "compile_bad_case_registry",
+                "calibrate_inspector",
                 "plan_delivery",
                 "build_inspector_contexts",
                 "build_delivery_handoff",
@@ -23,6 +26,18 @@ class GovernanceMCPTests(unittest.TestCase):
             },
         )
         self.assertFalse(any("approve" in name or "run" in name for name in names))
+
+    def test_learning_tools_only_compile_evidence_and_never_grant_authority(self):
+        registry = governance_mcp.call_tool(
+            "compile_bad_case_registry", {"registry_id": "empty", "cases": []}
+        )
+        profile = governance_mcp.call_tool(
+            "calibrate_inspector", {"lane_id": "security", "evaluations": []}
+        )
+
+        self.assertEqual(registry["metrics"]["confirmed"], 0)
+        self.assertEqual(profile["mode"], "shadow")
+        self.assertFalse(profile["promotion"]["automatic"])
 
     def test_compile_and_route_return_structured_content(self):
         compiled = governance_mcp.handle(

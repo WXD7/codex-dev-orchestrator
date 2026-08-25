@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from .governance import GovernanceEngine, integration_blueprint
+from .governance_learning import compile_bad_case_registry
 
 
 TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
@@ -33,7 +34,37 @@ def scaffold_project(target: Path, contract_source: Mapping[str, Any]) -> Dict[s
 
     engine = GovernanceEngine()
     contract = engine.compile_contract(contract_source)
-    plan = engine.route(contract)
+    bad_case_registry = compile_bad_case_registry(
+        {"registry_id": "project-bad-cases", "cases": []}
+    )
+    calibration_policy = {
+        "schema_version": "2.1",
+        "policy_id": "default-inspector-calibration",
+        "default_for_new_or_changed_inspectors": "shadow",
+        "thresholds": {
+            "minimum_cases": 8,
+            "minimum_positive_cases": 5,
+            "minimum_negative_cases": 3,
+            "minimum_recall": 0.9,
+            "maximum_false_positive_rate": 0.1,
+            "minimum_human_agreement": 0.9,
+            "minimum_independent_contributions": 1,
+        },
+        "evaluation_requirements": [
+            "case_hash",
+            "labelled_by",
+            "label_evidence",
+            "expected_defect",
+            "reported_defect",
+            "human_agrees",
+            "independent_contribution",
+        ],
+        "promotion": {
+            "automatic": False,
+            "effect": "blocking eligibility only; never merge or release authority",
+        },
+    }
+    plan = engine.route(contract, bad_case_registry)
     handoff = engine.delivery_handoff(contract, plan)
     governance_dir = root / ".ai-delivery"
     files = {
@@ -51,6 +82,58 @@ def scaffold_project(target: Path, contract_source: Mapping[str, Any]) -> Dict[s
         + "\n",
         governance_dir / "delivery-handoff.json": json.dumps(
             handoff, ensure_ascii=False, indent=2
+        )
+        + "\n",
+        governance_dir / "bad-case-registry.json": json.dumps(
+            bad_case_registry, ensure_ascii=False, indent=2
+        )
+        + "\n",
+        governance_dir / "calibration-policy.json": json.dumps(
+            calibration_policy, ensure_ascii=False, indent=2
+        )
+        + "\n",
+        governance_dir / "runtime-protocol.json": json.dumps(
+            {
+                "schema_version": "2.1",
+                "contract_hash": contract["contract_hash"],
+                "plan_hash": plan["plan_hash"],
+                "bad_case_registry_hash": bad_case_registry["registry_hash"],
+                "sequence": plan["sequence"],
+                "artifact_invariants": plan["artifact_invariants"],
+                "checkpoint_policy": plan["checkpoint_policy"],
+                "telemetry_schema": plan["telemetry_schema"],
+                "final_verifier": plan["final_verifier"],
+                "must_kill_cases": plan["must_kill_cases"],
+                "question_gate": contract["question_gate"],
+                "contract_resolution": {
+                    "proposal_is_not_approval": True,
+                    "human_delta_attestation_required": True,
+                    "binds": [
+                        "parent_contract_hash",
+                        "delta_hash",
+                        "proposed_contract_hash",
+                        "proposed_plan_hash",
+                        "external_task_ref",
+                        "parent_run_when_present",
+                    ],
+                    "owner_creation_requires_ready_contract": True,
+                },
+                "operator_snapshot": handoff.get("operator_view") or {},
+                "review_packet": {
+                    "source": "signed controller ledger",
+                    "separates_execution_from_delivery_verdict": True,
+                    "external_actions_allowed": False,
+                    "automated_approval": False,
+                },
+                "learning": {
+                    "bad_case_registry": "bad-case-registry.json",
+                    "calibration_policy": "calibration-policy.json",
+                    "confirmed_cases_require_human_evidence": True,
+                    "new_or_changed_inspectors_start_in_shadow": True,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
         )
         + "\n",
         governance_dir / "CONSTITUTION.md": (TEMPLATE_DIR / "CONSTITUTION.md").read_text(
