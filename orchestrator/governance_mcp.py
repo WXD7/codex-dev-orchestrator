@@ -21,7 +21,7 @@ from .governance_learning import (
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_NAME = "ai-delivery-governance"
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.6.0"
 
 
 class GovernanceToolError(ValueError):
@@ -35,6 +35,104 @@ def _object(value: Any, name: str) -> Mapping[str, Any]:
 
 
 TOOLS: List[Dict[str, Any]] = [
+    {
+        "name": "compile_technology_research",
+        "description": (
+            "Compile community, recent academic, open-source, and official evidence "
+            "into comparable frameworks and technology paths. A fresh read-only "
+            "quality review is mandatory; this tool does not browse or choose for a human."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "research_question": {"type": "string"},
+                "human_scope": {"type": "array", "items": {"type": "string"}},
+                "as_of": {"type": "string"},
+                "queries": {"type": "object"},
+                "sources": {"type": "array", "items": {"type": "object"}},
+                "framework_candidates": {"type": "array", "items": {"type": "object"}},
+                "technology_paths": {"type": "array", "items": {"type": "object"}},
+                "recommendation": {"type": "object"},
+                "review_declaration": {"type": "object"},
+                "review_findings": {"type": "array", "items": {"type": "object"}},
+                "review_verdict": {"type": "string", "enum": ["PASS", "BLOCKED"]},
+            },
+            "required": [
+                "research_question",
+                "human_scope",
+                "as_of",
+                "queries",
+                "sources",
+                "framework_candidates",
+                "technology_paths",
+                "recommendation",
+                "review_declaration",
+                "review_findings",
+                "review_verdict",
+            ],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "compile_intent_brief",
+        "description": (
+            "Compile the original request, final outcomes, executor/runtime split, "
+            "technical choices, examples, and risk boundaries into a hash-bound brief. "
+            "It asks questions but cannot confirm them for the human."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "original_request": {"type": "string"},
+                "conversation_refs": {"type": "array", "items": {"type": "string"}},
+                "expected_outcomes": {"type": "array", "items": {"type": "string"}},
+                "acceptance_examples": {"type": "array", "items": {"type": "object"}},
+                "development_executor": {"type": "object"},
+                "product_runtime": {"type": "object"},
+                "technical_choices": {"type": "array", "items": {"type": "object"}},
+                "technology_research": {"type": "object"},
+                "technology_strategy": {"type": "object"},
+                "non_goals": {"type": "array", "items": {"type": "string"}},
+                "risk_boundaries": {"type": "array", "items": {"type": "string"}},
+                "research_refs": {"type": "array", "items": {"type": "string"}},
+                "unresolved_questions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["original_request"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "compile_intent_inspection",
+        "description": (
+            "Compile a fresh read-only inspection comparing the original request, "
+            "research, intent brief, proposed contract, and acceptance examples. "
+            "Blocking findings become human questions and cannot be self-fixed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "brief": {"type": "object"},
+                "proposed_contract_source": {"type": "object"},
+                "technology_research": {"type": "object"},
+                "research_evidence": {"type": "array", "items": {"type": "string"}},
+                "evidence_inputs": {"type": "array", "items": {"type": "string"}},
+                "inspector_declaration": {"type": "object"},
+                "coverage": {"type": "array", "items": {"type": "object"}},
+                "findings": {"type": "array", "items": {"type": "object"}},
+                "verdict": {"type": "string", "enum": ["PASS", "BLOCKED"]},
+            },
+            "required": [
+                "brief",
+                "proposed_contract_source",
+                "evidence_inputs",
+                "inspector_declaration",
+                "coverage",
+                "findings",
+                "verdict",
+            ],
+            "additionalProperties": False,
+        },
+    },
     {
         "name": "compile_work_contract",
         "description": (
@@ -162,6 +260,14 @@ TOOLS: List[Dict[str, Any]] = [
                         "required": ["title", "counterexample", "expected"],
                         "additionalProperties": False,
                     },
+                },
+                "intent_alignment": {
+                    "type": "object",
+                    "properties": {
+                        "brief": {"type": "object"},
+                        "inspection": {"type": "object"},
+                    },
+                    "additionalProperties": False,
                 },
             },
             "required": ["goal"],
@@ -303,6 +409,12 @@ TOOLS: List[Dict[str, Any]] = [
 
 def call_tool(name: str, arguments: Mapping[str, Any]) -> Dict[str, Any]:
     engine = GovernanceEngine()
+    if name == "compile_technology_research":
+        return engine.compile_technology_research(arguments)
+    if name == "compile_intent_brief":
+        return engine.compile_intent_brief(arguments)
+    if name == "compile_intent_inspection":
+        return engine.compile_intent_inspection(arguments)
     if name == "compile_work_contract":
         return engine.compile_contract(arguments)
     if name == "propose_contract_resolution":

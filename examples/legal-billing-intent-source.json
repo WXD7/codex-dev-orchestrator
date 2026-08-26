@@ -1,0 +1,78 @@
+{
+  "original_request": "完善德国律师相关计费邮件 Demo：用户提交受支持材料后，系统必须算出金额并生成可复核邮件；开发 Agent 使用本机登录的 Codex，产品运行时的材料理解使用 DeepSeek 官方 API。",
+  "conversation_refs": [
+    "codex://threads/legal-billing-evaluation"
+  ],
+  "expected_outcomes": [
+    "受支持案例必须输出明确的欧元金额、逐步公式、输入事实、规则版本和法源引用",
+    "使用 DeepSeek 官方 API 将邮件或材料整理为结构化事实，但最终金额只能由确定性计算器产生",
+    "缺少计费必要事实时必须追问人，不能返回伪精确金额"
+  ],
+  "acceptance_examples": [
+    {
+      "id": "supported-amount-example",
+      "input": "批准的 SAMPLE-001 fixture：净额 100.00 EUR，批准规则中的 VAT 为 19%，其余费用为 0",
+      "expected_output": "结果明确显示净额 100.00 EUR、VAT 19.00 EUR、总额 119.00 EUR，并列出公式和 fixture/rule 版本"
+    },
+    {
+      "id": "missing-fact-example",
+      "input": "邮件没有给出案件价值或任何可匹配的已批准计费 fixture",
+      "expected_output": "不输出总金额；明确追问缺失事实并标记 REVIEW_REQUIRED"
+    }
+  ],
+  "development_executor": {
+    "provider": "Codex",
+    "model": "本机当前已配置模型",
+    "authentication": "本机已登录的 ChatGPT/Codex 订阅",
+    "purpose": "调查仓库、开发代码、运行测试和修复"
+  },
+  "product_runtime": {
+    "provider": "DeepSeek official API",
+    "model": "deepseek-chat",
+    "authentication": "只从进程环境变量 DEEPSEEK_API_KEY 读取，禁止打印、写死或写入日志",
+    "purpose": "把用户邮件或材料提取为有出处的结构化候选事实并生成澄清问题；不直接计算最终金额"
+  },
+  "technical_choices": [
+    {
+      "id": "deterministic-money-core",
+      "topic": "最终金额计算方式",
+      "selected": "Decimal 确定性规则引擎",
+      "alternatives": [
+        "让 LLM 直接心算金额",
+        "只展示规则但不计算金额"
+      ],
+      "rationale": "用户要求至少能算出钱，金额必须可复放、可审计且不受模型措辞波动影响",
+      "evidence": "用户明确要求使用 DeepSeek 的是具体 Demo 运行时，同时要求金额结果",
+      "high_impact": true
+    },
+    {
+      "id": "deepseek-runtime-boundary",
+      "topic": "DeepSeek 与 Codex 的职责边界",
+      "selected": "Codex 负责开发；DeepSeek API 只在产品 Demo 运行时理解材料",
+      "alternatives": [
+        "把本机 Codex 登录当作产品模型运行时",
+        "产品 Demo 不接模型 API"
+      ],
+      "rationale": "两种认证、成本和职责不同，必须分别确认",
+      "evidence": "用户明确说明其他开发仍可用本机登录，但具体计算 Demo 要接 DeepSeek API",
+      "high_impact": true
+    }
+  ],
+  "non_goals": [
+    "不提供正式法律意见",
+    "不让 DeepSeek 直接决定最终金额",
+    "不自动发送邮件、账单或付款"
+  ],
+  "risk_boundaries": [
+    "DEEPSEEK_API_KEY 只能由产品进程读取且不得进入治理输入、Prompt、日志、测试快照或 Git",
+    "自动测试默认使用伪造适配器，不产生外部 API 费用；真实 DeepSeek 调用必须由人主动运行",
+    "未被专家批准的法源或规则不能进入自动金额计算",
+    "合并、发布、外部发信和付款始终由人决定"
+  ],
+  "research_refs": [
+    "examples/legal-billing-contract-source.json",
+    "docs/V2_IMPLEMENTATION.md",
+    "docs/V2_3_TECH_RESEARCH_RACE.md"
+  ],
+  "unresolved_questions": []
+}

@@ -57,6 +57,9 @@ def parser() -> argparse.ArgumentParser:
     )
     governance_sub = governance.add_subparsers(dest="governance_command", required=True)
     for name, help_text in (
+        ("research", "Compile four-channel technology research and independent quality review"),
+        ("intent", "Compile a human-facing intent confirmation brief"),
+        ("inspect-intent", "Compile a fresh read-only intent inspection result"),
         ("compile", "Compile a raw work contract"),
         ("resolve", "Compile a proposed hash-bound resolution for contract questions"),
         ("cases", "Compile a human-confirmed hidden Bad Case registry"),
@@ -173,7 +176,13 @@ def main(argv=None) -> int:
             _write_json_output("-", integration_blueprint())
             return 0
         source = _read_json_input(args.input)
-        if operation == "compile":
+        if operation == "research":
+            result = engine.compile_technology_research(source)
+        elif operation == "intent":
+            result = engine.compile_intent_brief(source)
+        elif operation == "inspect-intent":
+            result = engine.compile_intent_inspection(source)
+        elif operation == "compile":
             result = engine.compile_contract(source)
         elif operation == "resolve":
             result = engine.propose_contract_resolution(

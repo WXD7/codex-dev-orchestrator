@@ -9,11 +9,20 @@ This fragment intentionally does not invent those deployment-specific values.
 Before starting implementation, read:
 
 - `.ai-delivery/CONSTITUTION.md`
+- `.ai-delivery/technology-research.json`
+- `.ai-delivery/intent-brief.json`
+- `.ai-delivery/intent-inspection.json`
 - `.ai-delivery/contract.json`
 - `.ai-delivery/verification-plan.json`
 - `.ai-delivery/runtime-protocol.json`
 - `.ai-delivery/bad-case-registry.json`
 - `.ai-delivery/calibration-policy.json`
+
+First require a four-channel technology research packet and a PASS result from
+its fresh read-only quality inspector. Then show the intent brief to the human and require a PASS result from a new
+read-only intent inspector. The runner must then record a controller-signed human
+attestation binding the research, technology strategy, intent, inspection, contract, plan and same tracker issue.
+Do not create an owner while the handoff says `awaiting_intent_attestation`.
 
 If the contract status is not `ready`, stop at the human clarification state and
 report the unanswered questions. Never infer answers merely to keep the workflow
@@ -29,10 +38,19 @@ Codex prompt. Advance only when declared artifact invariants pass.
 
 ## Owner execution
 
+If the signed strategy enables a bounded technology race, create only the two or
+three selected candidate contexts in isolated workspaces. They receive the same
+contract, data, tests, evaluation dimensions and budget, and remain mutually
+blind. A fresh read-only evaluator compares their submitted artifacts. Only a
+subsequent controller-signed human keep/fuse/reject-all decision may create the
+continuing owner; reject-all stops.
+
 Keep one Codex owner session responsible for investigation, implementation, and
 at most one consolidated repair. Work only in the issue workspace. Do not push,
-merge, deploy, publish, contact external people, accept API keys, or change the
-governance policy.
+merge, deploy, publish, contact external people, put API keys into prompts or
+governance inputs, or change the governance policy. A human-confirmed product
+runtime may read its named API key from the process environment through product
+code that does not expose the value.
 
 Run all required deterministic checks before independent semantic inspection.
 A required check that cannot run is a failed gate, not a silent pass.

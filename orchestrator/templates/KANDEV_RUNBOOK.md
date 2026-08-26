@@ -38,30 +38,49 @@ server has no credentials and no write tools.
 
 ## Run one delivery
 
-1. Read `.ai-delivery/contract.json`. If its status is not `ready`, stop and
+1. Read `.ai-delivery/technology-research.json`. Require four-channel evidence
+   (community, recent academic, open source, official) and a PASS from the fresh
+   read-only research quality inspector. Then read `.ai-delivery/intent-brief.json` and show its final outcomes, concrete
+   examples, development executor, product runtime, technical choices and risk
+   boundaries to the human. Run the fresh read-only intent inspection from
+   `.ai-delivery/intent-inspection.json`. If either artifact is blocked, stop;
+   the inspector reports questions but does not answer or edit the proposal.
+2. Read `.ai-delivery/contract.json`. If its status is not `ready`, stop and
    return its clarification questions to the human intake surface. Compile the
    answers into a delta proposal, then let the trusted controller record a human
    attestation bound to the parent contract, new contract, new plan, and the same
    Kandev task. Do not create an owner from a proposal alone.
-2. Run the V2.1 preflight and persist its environment capsule. Stop if cwd, the
+3. Before implementation creation, require a controller HMAC attestation binding the
+   displayed `research_hash`, technology-strategy hash, `intent_hash`, `inspection_hash`, contract, plan and Kandev task.
+   Neither Kandev nor an Agent may self-attest. A handoff with
+   `awaiting_intent_attestation` is not permission to create `owner_task`.
+4. Run the V2.3 preflight and persist its environment capsule. Stop if cwd, the
    real Git diff root, permissions, required commands, ports, or locks are not ready.
-3. Read `.ai-delivery/runtime-protocol.json`. The trusted Kandev-side controller
+5. Read `.ai-delivery/runtime-protocol.json`. The trusted Kandev-side controller
    creates the signed atomic ledger and retains the control token outside every
    Agent context. A normal process exit never completes a stage by itself.
-4. Read `.ai-delivery/delivery-handoff.json` and create only its `owner_task`
-   with the writable owner profile in an isolated worktree.
-5. Keep that owner session continuous through implementation. Capture every
+6. Read `.ai-delivery/delivery-handoff.json`. For `single_path`, create its
+   `owner_task` after preflight. For `bounded_race`, create exactly the listed
+   two or three `race_tasks`, each in a unique context/worktree with identical
+   frozen contract, data, tests, dimensions and budgets. Do not create the main
+   owner yet and do not show candidates one another's transcript or output.
+7. After every race task submits, create only the fresh read-only
+   `evaluator_task`. It may recommend keep/fuse/reject-all but cannot choose for
+   the human. The trusted controller records `attest_race_selection()` against
+   the evaluation hash. A retained winner continues its original context;
+   fusion uses the newly declared integration owner; reject-all stops.
+8. Keep that owner session continuous through implementation. Capture every
    declared deterministic check as structured command/status/evidence.
-6. Do not create inspectors until all required deterministic checks and evidence
+9. Do not create inspectors until all required deterministic checks and evidence
    classes pass. Then create exactly the handoff's `inspector_tasks`, each as a new task and fresh
    session with the read-only inspector profile.
-7. Submit structured reproduction bundles to `adjudicate_delivery`. It merges
+10. Submit structured reproduction bundles to `adjudicate_delivery`. It merges
    cross-lane findings by root cause. If it returns `repair_once`, send the one
    consolidated package back to the original owner session and rerun the complete plan once.
-8. After full re-verification passes, create the handoff's `final_verifier_task`
+11. After full re-verification passes, create the handoff's `final_verifier_task`
    as a new read-only session. Do not show it the owner transcript or any prior
    finding. It must pass every must-kill case.
-9. Stop at `awaiting_human_decision` or `human_decision`. Neither state authorizes
+12. Stop at `awaiting_human_decision` or `human_decision`. Neither state authorizes
    Kandev or Codex to push, merge, open a PR, deploy, publish, or spend money.
    Build the Review Packet from the signed ledger and show it in the existing
    Kandev/LobeHub task surface.

@@ -1,0 +1,67 @@
+{
+  "description": "将当前工程的 Codex 子 Agent 生命周期以隐私最小化事件同步到 Kandev 智能体监控。",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator-ai-native/integrations/kandev-agent-observer/bridge/codex_hook_receiver.py\" --kandev-workspace-id 3b741184-dd5c-48b4-8346-3f232759673f",
+            "timeout": 3,
+            "statusMessage": "同步智能体监控"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator-ai-native/integrations/kandev-agent-observer/bridge/codex_hook_receiver.py\" --kandev-workspace-id 3b741184-dd5c-48b4-8346-3f232759673f",
+            "timeout": 3,
+            "statusMessage": "记录子 Agent 启动"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator-ai-native/integrations/kandev-agent-observer/bridge/codex_hook_receiver.py\" --kandev-workspace-id 3b741184-dd5c-48b4-8346-3f232759673f",
+            "timeout": 3,
+            "statusMessage": "记录子 Agent 停止"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Agent|spawn_agent|send_message|send_input|followup_task|resume_agent|wait|wait_agent|interrupt_agent|close_agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator-ai-native/integrations/kandev-agent-observer/bridge/codex_hook_receiver.py\" --kandev-workspace-id 3b741184-dd5c-48b4-8346-3f232759673f",
+            "timeout": 3,
+            "statusMessage": "记录 Agent 协作"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Agent|spawn_agent|send_message|send_input|followup_task|resume_agent|wait|wait_agent|interrupt_agent|close_agent)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator-ai-native/integrations/kandev-agent-observer/bridge/codex_hook_receiver.py\" --kandev-workspace-id 3b741184-dd5c-48b4-8346-3f232759673f",
+            "timeout": 3,
+            "statusMessage": "确认 Agent 协作结果"
+          }
+        ]
+      }
+    ]
+  }
+}

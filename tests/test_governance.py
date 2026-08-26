@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -8,6 +9,353 @@ from pathlib import Path
 from orchestrator.delivery_bundle import scaffold_project
 from orchestrator.governance import GovernanceEngine, integration_blueprint
 from tests.helpers import make_git_repo
+
+
+def technology_research_for(engine, race_recommended=False):
+    common_source = {
+        "accessed_at": "2026-08-25",
+        "claims": ["Supports one bounded technical comparison claim"],
+        "quality_signals": ["Named publisher and dated evidence"],
+        "limitations": ["Does not prove repository-specific integration alone"],
+    }
+    sources = [
+        {
+            **common_source,
+            "id": "community-1",
+            "channel": "community",
+            "kind": "forum_thread",
+            "title": "Recent practitioner discussion",
+            "url": "https://community.example.com/discussions/2026-workflows",
+            "publisher": "Example community",
+            "published_at": "2026-03-01",
+            "summary": "Practitioners compare bounded workflows in production-like use.",
+        },
+        {
+            **common_source,
+            "id": "community-2",
+            "channel": "community",
+            "kind": "community_case_study",
+            "title": "Independent implementation case",
+            "url": "https://engineering.example.org/cases/agent-delivery",
+            "publisher": "Engineering example",
+            "published_at": "2025-10-01",
+            "summary": "A separate team documents integration and maintenance tradeoffs.",
+        },
+        {
+            **common_source,
+            "id": "academic-1",
+            "channel": "academic",
+            "kind": "peer_reviewed_paper",
+            "title": "Recent controlled study of software agents",
+            "url": "https://doi.org/10.0000/example.2025.1",
+            "publisher": "Example scholarly society",
+            "published_at": "2025-06-01",
+            "summary": "A controlled comparison reports strengths and failure modes.",
+            "peer_reviewed": True,
+            "venue": "Example Software Engineering Conference",
+            "identifier": "doi:10.0000/example.2025.1",
+            "methods_summary": "Controlled tasks with fixed inputs, metrics, and blinded scoring.",
+        },
+        {
+            **common_source,
+            "id": "academic-2",
+            "channel": "academic",
+            "kind": "preprint",
+            "title": "Replication study for agent evaluation",
+            "url": "https://arxiv.org/abs/2601.00001",
+            "publisher": "arXiv",
+            "published_at": "2026-01-15",
+            "summary": "A replication discusses benchmark leakage and cost controls.",
+            "venue": "arXiv",
+            "identifier": "arXiv:2601.00001",
+            "methods_summary": "Replicated fixed-task evaluation across isolated contexts.",
+        },
+        {
+            **common_source,
+            "id": "repo-a",
+            "channel": "open_source",
+            "kind": "repository",
+            "title": "Framework A repository",
+            "url": "https://github.com/example/framework-a",
+            "publisher": "Framework A maintainers",
+            "published_at": "2026-07-01",
+            "summary": "Repository activity, license, issues, and release history for A.",
+            "primary_evidence": True,
+        },
+        {
+            **common_source,
+            "id": "repo-b",
+            "channel": "open_source",
+            "kind": "repository",
+            "title": "Framework B repository",
+            "url": "https://gitlab.com/example/framework-b",
+            "publisher": "Framework B maintainers",
+            "published_at": "2026-06-01",
+            "summary": "Repository activity, license, issues, and release history for B.",
+            "primary_evidence": True,
+        },
+        {
+            **common_source,
+            "id": "docs-a",
+            "channel": "official",
+            "kind": "official_documentation",
+            "title": "Framework A documentation",
+            "url": "https://framework-a.example.com/docs",
+            "publisher": "Framework A maintainers",
+            "published_at": "2026-07-01",
+            "summary": "Official integration, security, and extension documentation for A.",
+            "primary_evidence": True,
+        },
+        {
+            **common_source,
+            "id": "docs-b",
+            "channel": "official",
+            "kind": "official_documentation",
+            "title": "Framework B documentation",
+            "url": "https://framework-b.example.net/docs",
+            "publisher": "Framework B maintainers",
+            "published_at": "2026-06-01",
+            "summary": "Official integration, security, and extension documentation for B.",
+            "primary_evidence": True,
+        },
+    ]
+    scores_a = {name: 4 for name in (
+        "requirements_fit", "maturity", "maintenance", "security",
+        "integration_fit", "extensibility", "ecosystem", "license_fit",
+    )}
+    scores_b = dict(scores_a, integration_fit=3, extensibility=5)
+    return engine.compile_technology_research(
+        {
+            "research_question": "Which bounded architecture best fits the confirmed delivery scope?",
+            "human_scope": ["Keep the human-confirmed goal, non-goals, and risk boundary unchanged"],
+            "as_of": "2026-08-25",
+            "queries": {
+                "community": ["recent practitioner experience and failure modes"],
+                "academic": ["recent peer reviewed agent workflow evaluation"],
+                "open_source": ["maintained open source workflow frameworks"],
+                "official": ["official architecture security license documentation"],
+            },
+            "sources": sources,
+            "framework_candidates": [
+                {
+                    "id": "framework-a",
+                    "name": "Framework A",
+                    "repository_url": "https://github.com/example/framework-a",
+                    "official_docs_url": "https://framework-a.example.com/docs",
+                    "license": "Apache-2.0",
+                    "status": "maintained",
+                    "latest_release_at": "2026-07-01",
+                    "source_ids": ["repo-a", "docs-a"],
+                    "strengths": ["Simple integration"],
+                    "gaps": ["Less flexible extension model"],
+                    "risks": ["Repository-specific fit remains unproven"],
+                    "integration_notes": "Fits a thin stateless governance adapter.",
+                    "scores": scores_a,
+                },
+                {
+                    "id": "framework-b",
+                    "name": "Framework B",
+                    "repository_url": "https://gitlab.com/example/framework-b",
+                    "official_docs_url": "https://framework-b.example.net/docs",
+                    "license": "MIT",
+                    "status": "maintained",
+                    "latest_release_at": "2026-06-01",
+                    "source_ids": ["repo-b", "docs-b"],
+                    "strengths": ["Flexible extension model"],
+                    "gaps": ["Higher integration cost"],
+                    "risks": ["More configuration surface"],
+                    "integration_notes": "Potentially stronger for complex projects after a spike.",
+                    "scores": scores_b,
+                },
+            ],
+            "technology_paths": [
+                {
+                    "id": "path-a",
+                    "name": "Thin Framework A adapter",
+                    "approach": "Use Framework A through a stateless adapter.",
+                    "framework_ids": ["framework-a"],
+                    "hypothesis": "Lower integration complexity will win for this scope.",
+                    "unknowns": ["Repository-specific recovery behavior needs a prototype"],
+                    "strengths": ["Lower integration cost"],
+                    "risks": ["May constrain later extension"],
+                    "source_ids": ["community-1", "academic-1", "repo-a", "docs-a"],
+                    "estimated_effort": "One bounded implementation slice",
+                },
+                {
+                    "id": "path-b",
+                    "name": "Extensible Framework B adapter",
+                    "approach": "Use Framework B with an explicit extension layer.",
+                    "framework_ids": ["framework-b"],
+                    "hypothesis": "Extension flexibility may justify its integration cost.",
+                    "unknowns": ["Real task latency and configuration burden need a prototype"],
+                    "strengths": ["More extension points"],
+                    "risks": ["Higher setup and maintenance cost"],
+                    "source_ids": ["community-2", "academic-2", "repo-b", "docs-b"],
+                    "estimated_effort": "One bounded implementation slice",
+                },
+            ],
+            "recommendation": {
+                "selected_path_ids": ["path-a", "path-b"] if race_recommended else ["path-a"],
+                "rationale": "A is the default; a bounded race is justified only when the human accepts unresolved repository fit.",
+                "source_ids": ["community-1", "academic-1", "repo-a", "docs-a"],
+                "key_tradeoffs": ["Integration simplicity versus extension flexibility"],
+                "rejected_alternatives": ["Unbounded parallel development"],
+                "confidence": 0.82,
+                "race_recommended": race_recommended,
+                "race_rationale": "Both paths remain viable and recovery/cost unknowns require a prototype." if race_recommended else "",
+            },
+            "review_declaration": {
+                "context_id": "fresh-research-review",
+                "fresh_context": True,
+                "read_only": True,
+                "collector_transcript_visible": False,
+                "candidate_implementation_visible": False,
+            },
+            "review_findings": [],
+            "review_verdict": "PASS",
+        }
+    )
+
+
+def intent_alignment_for(source, bounded_race=False):
+    engine = GovernanceEngine()
+    research = technology_research_for(engine, race_recommended=bounded_race)
+    outcomes = list(source.get("outcomes") or ["The requested result is observable"])
+    brief = engine.compile_intent_brief(
+        {
+            "original_request": str(source.get("goal") or "Build the requested change"),
+            "conversation_refs": ["test-fixture://original-request"],
+            "expected_outcomes": outcomes,
+            "acceptance_examples": [
+                {
+                    "id": "example-1",
+                    "input": "A valid representative user input",
+                    "expected_output": str(
+                        (source.get("acceptance_criteria") or [outcomes[0]])[0]
+                    ),
+                }
+            ],
+            "development_executor": {
+                "provider": "Codex",
+                "model": "locally configured",
+                "authentication": "locally authenticated subscription",
+                "purpose": "Investigate, implement, and run repository checks",
+            },
+            "product_runtime": {
+                "provider": "none",
+                "model": "not_applicable",
+                "authentication": "not_applicable",
+                "purpose": "This fixture declares no model API in the delivered product",
+            },
+            "technical_choices": [
+                {
+                    "id": "delivery-shape",
+                    "topic": "Delivery shape",
+                    "selected": "Implement the compiled work contract",
+                    "alternatives": ["Documentation-only response"],
+                    "rationale": "The fixture represents a product-code delivery",
+                    "evidence": "Test fixture declaration",
+                    "research_hash": research["research_hash"],
+                    "high_impact": True,
+                }
+            ],
+            "technology_research": research,
+            "technology_strategy": (
+                {
+                    "mode": "bounded_race",
+                    "selected_path_ids": ["path-a", "path-b"],
+                    "decision_rationale": "The human authorizes a bounded comparison of two viable paths.",
+                    "common_test_commands": ["python3 -m unittest"],
+                    "evaluation_dimensions": ["quality", "performance", "cost", "risk"],
+                    "time_budget_minutes": 90,
+                    "cost_budget": "No external paid calls",
+                    "fusion_allowed": True,
+                    "stop_conditions": ["Stop at 90 minutes", "Reject paths with failing common tests"],
+                }
+                if bounded_race
+                else {
+                    "mode": "single_path",
+                    "selected_path_ids": ["path-a"],
+                    "decision_rationale": "The default fixture does not need an implementation race.",
+                }
+            ),
+            "non_goals": list(source.get("non_goals") or ["No adjacent work"]),
+            "risk_boundaries": list(
+                source.get("human_decisions") or ["A human approves external actions"]
+            ),
+            "research_refs": ["test-fixture://research"],
+            "unresolved_questions": [],
+        }
+    )
+    coverage = [
+        {
+            "requirement_id": "outcome-%d" % (index + 1),
+            "status": "covered",
+            "evidence": "Mapped to outcomes[%d]" % index,
+        }
+        for index, _item in enumerate(brief["expected_outcomes"])
+    ]
+    coverage.extend(
+        [
+            {
+                "requirement_id": "example-1",
+                "status": "covered",
+                "evidence": "Mapped to acceptance_criteria[0]",
+            },
+            {
+                "requirement_id": "delivery-shape",
+                "status": "covered",
+                "evidence": "Bound in the intent brief carried by the contract",
+            },
+            {
+                "requirement_id": "development-executor",
+                "status": "covered",
+                "evidence": "Codex is declared only as the development executor",
+            },
+            {
+                "requirement_id": "product-runtime",
+                "status": "covered",
+                "evidence": "The product runtime is separately and explicitly declared",
+            },
+            {
+                "requirement_id": "research-recommendation",
+                "status": "covered",
+                "evidence": "The technical choice binds the frozen research hash",
+            },
+            {
+                "requirement_id": "technology-strategy",
+                "status": "covered",
+                "evidence": "The human-facing brief selects one researched path",
+            },
+        ]
+    )
+    proposed = {key: value for key, value in source.items() if key != "intent_alignment"}
+    inspection = engine.compile_intent_inspection(
+        {
+            "brief": brief,
+            "proposed_contract_source": proposed,
+            "technology_research": research,
+            "research_evidence": ["Fixture choices were compared with the contract source"],
+            "evidence_inputs": [
+                "original_request",
+                "intent_brief",
+                "technical_research",
+                "proposed_contract",
+                "acceptance_examples",
+            ],
+            "inspector_declaration": {
+                "context_id": "fresh-intent-fixture",
+                "fresh_context": True,
+                "read_only": True,
+                "owner_transcript_visible": False,
+                "peer_findings_visible": False,
+            },
+            "coverage": coverage,
+            "findings": [],
+            "verdict": "PASS",
+        }
+    )
+    return {"brief": brief, "inspection": inspection}
 
 
 def ready_source(**overrides):
@@ -26,12 +374,315 @@ def ready_source(**overrides):
         "risk_flags": ["authorization", "multi_tenant", "user_experience"],
     }
     value.update(overrides)
+    if "intent_alignment" not in overrides:
+        value["intent_alignment"] = intent_alignment_for(value)
     return value
+
+
+def research_source_from(artifact):
+    return {
+        "research_question": copy.deepcopy(artifact["research_question"]),
+        "human_scope": copy.deepcopy(artifact["human_scope"]),
+        "as_of": artifact["as_of"],
+        "queries": copy.deepcopy(artifact["queries"]),
+        "sources": copy.deepcopy(artifact["sources"]),
+        "framework_candidates": copy.deepcopy(artifact["framework_candidates"]),
+        "technology_paths": copy.deepcopy(artifact["technology_paths"]),
+        "recommendation": copy.deepcopy(artifact["recommendation"]),
+        "review_declaration": copy.deepcopy(artifact["review_declaration"]),
+        "review_findings": copy.deepcopy(artifact["review_findings"]),
+        "review_verdict": artifact["requested_verdict"],
+    }
+
+
+class TechnologyResearchTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = GovernanceEngine()
+        self.valid = technology_research_for(self.engine, race_recommended=True)
+
+    def compile_mutation(self, mutate):
+        source = research_source_from(self.valid)
+        mutate(source)
+        return self.engine.compile_technology_research(source)
+
+    def test_four_channel_research_and_independent_quality_review_pass(self):
+        self.assertEqual(self.valid["status"], "pass")
+        self.assertEqual(
+            {item["display_name"] for item in self.valid["roles"]},
+            {"技术调研员", "调研质检员"},
+        )
+        self.assertEqual(len(self.valid["framework_candidates"]), 2)
+        self.assertEqual(len(self.valid["technology_paths"]), 2)
+
+    def test_one_community_domain_is_not_enough(self):
+        result = self.compile_mutation(
+            lambda source: source.update(
+                sources=[
+                    item
+                    for item in source["sources"]
+                    if item["id"] != "community-2"
+                ]
+            )
+        )
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("community-coverage", {item["id"] for item in result["blockers"]})
+
+    def test_stale_academic_claim_requires_recent_corroboration(self):
+        def mutate(source):
+            paper = next(item for item in source["sources"] if item["id"] == "academic-2")
+            paper["published_at"] = "2010-01-01"
+            paper["foundational"] = False
+            paper["corroborates"] = []
+
+        result = self.compile_mutation(mutate)
+        self.assertIn(
+            "stale-academic-academic-2", {item["id"] for item in result["blockers"]}
+        )
+
+    def test_one_framework_or_incomplete_fit_matrix_is_blocked(self):
+        one = self.compile_mutation(
+            lambda source: source.update(
+                framework_candidates=source["framework_candidates"][:1]
+            )
+        )
+        self.assertIn("framework-candidates", {item["id"] for item in one["blockers"]})
+
+        def remove_license_score(source):
+            source["framework_candidates"][0]["scores"].pop("license_fit")
+
+        incomplete = self.compile_mutation(remove_license_score)
+        self.assertIn(
+            "framework-scores-framework-a",
+            {item["id"] for item in incomplete["blockers"]},
+        )
+
+    def test_research_reviewer_cannot_see_collector_transcript(self):
+        result = self.compile_mutation(
+            lambda source: source["review_declaration"].update(
+                collector_transcript_visible=True
+            )
+        )
+        self.assertIn(
+            "research-review-leakage", {item["id"] for item in result["blockers"]}
+        )
+
+    def test_human_strategy_cannot_start_more_than_three_race_paths(self):
+        research_source = research_source_from(self.valid)
+        for suffix in ("c", "d"):
+            extra = copy.deepcopy(research_source["technology_paths"][0])
+            extra["id"] = "path-%s" % suffix
+            extra["name"] = "Additional path %s" % suffix.upper()
+            research_source["technology_paths"].append(extra)
+        research = self.engine.compile_technology_research(research_source)
+        fixture = ready_source()["intent_alignment"]["brief"]
+        brief_source = {
+            key: copy.deepcopy(fixture[key])
+            for key in (
+                "original_request",
+                "conversation_refs",
+                "expected_outcomes",
+                "acceptance_examples",
+                "development_executor",
+                "product_runtime",
+                "technical_choices",
+                "non_goals",
+                "risk_boundaries",
+                "research_refs",
+                "unresolved_questions",
+            )
+        }
+        for choice in brief_source["technical_choices"]:
+            choice["research_hash"] = research["research_hash"]
+        brief_source["technology_research"] = research
+        brief_source["technology_strategy"] = {
+            "mode": "bounded_race",
+            "selected_path_ids": ["path-a", "path-b", "path-c", "path-d"],
+            "decision_rationale": "Try every path",
+            "common_test_commands": ["python3 -m unittest"],
+            "evaluation_dimensions": ["quality"],
+            "time_budget_minutes": 100,
+            "cost_budget": "No paid calls",
+            "fusion_allowed": True,
+            "stop_conditions": ["Stop at the budget"],
+        }
+        brief = self.engine.compile_intent_brief(brief_source)
+        self.assertIn(
+            "race_path_count", {item["id"] for item in brief["confirmation_questions"]}
+        )
 
 
 class ContractTests(unittest.TestCase):
     def setUp(self):
         self.engine = GovernanceEngine()
+
+    def test_intent_brief_blocks_without_input_output_example(self):
+        brief = self.engine.compile_intent_brief(
+            {
+                "original_request": "Build an amount calculator",
+                "expected_outcomes": ["The user receives a calculated amount"],
+                "development_executor": {
+                    "provider": "Codex",
+                    "purpose": "Develop the product",
+                },
+                "product_runtime": {
+                    "provider": "DeepSeek official API",
+                    "purpose": "Extract structured candidate facts",
+                },
+                "non_goals": ["No external email sending"],
+                "risk_boundaries": ["A human approves paid API execution"],
+            }
+        )
+
+        self.assertEqual(brief["status"], "needs_clarification")
+        self.assertIn(
+            "acceptance_examples",
+            {item["id"] for item in brief["confirmation_questions"]},
+        )
+
+    def test_intent_inspector_blocks_deepseek_amount_goal_substitution(self):
+        brief = self.engine.compile_intent_brief(
+            {
+                "original_request": "Use DeepSeek in the product demo and calculate an amount",
+                "expected_outcomes": ["Return an explicit calculated EUR amount"],
+                "acceptance_examples": [
+                    {
+                        "id": "amount-example",
+                        "input": "Approved fixture with net 100 and VAT 19 percent",
+                        "expected_output": "Total 119.00 EUR",
+                    }
+                ],
+                "development_executor": {
+                    "provider": "Codex",
+                    "purpose": "Develop and test the repository",
+                },
+                "product_runtime": {
+                    "provider": "DeepSeek official API",
+                    "model": "deepseek-chat",
+                    "authentication": "DEEPSEEK_API_KEY environment variable",
+                    "purpose": "Extract facts for the product demo",
+                },
+                "technical_choices": [
+                    {
+                        "id": "money-core",
+                        "topic": "Amount calculation",
+                        "selected": "Deterministic Decimal calculator",
+                        "alternatives": ["Do not calculate an amount"],
+                        "rationale": "The user explicitly requires a numeric result",
+                        "high_impact": True,
+                    }
+                ],
+                "non_goals": ["No real invoice sending"],
+                "risk_boundaries": ["Never expose the API key"],
+            }
+        )
+        inspection = self.engine.compile_intent_inspection(
+            {
+                "brief": brief,
+                "proposed_contract_source": {
+                    "goal": "Use the locally logged-in Codex CLI and show rules without calculating money"
+                },
+                "research_evidence": ["Compared the proposed runtime with the original request"],
+                "evidence_inputs": [
+                    "original_request",
+                    "intent_brief",
+                    "technical_research",
+                    "proposed_contract",
+                    "acceptance_examples",
+                ],
+                "inspector_declaration": {
+                    "context_id": "fresh-read-only-inspector",
+                    "fresh_context": True,
+                    "read_only": True,
+                    "owner_transcript_visible": False,
+                    "peer_findings_visible": False,
+                },
+                "coverage": [
+                    {
+                        "requirement_id": "outcome-1",
+                        "status": "changed",
+                        "evidence": "The proposed contract explicitly refuses to calculate money",
+                    },
+                    {
+                        "requirement_id": "amount-example",
+                        "status": "missing",
+                        "evidence": "No numeric amount example remains",
+                    },
+                    {
+                        "requirement_id": "money-core",
+                        "status": "changed",
+                        "evidence": "The deterministic calculator was removed",
+                    },
+                    {
+                        "requirement_id": "development-executor",
+                        "status": "covered",
+                        "evidence": "Codex remains the development executor",
+                    },
+                    {
+                        "requirement_id": "product-runtime",
+                        "status": "changed",
+                        "evidence": "Codex login was substituted for the DeepSeek product runtime",
+                    },
+                ],
+                "findings": [
+                    {
+                        "id": "provider-confusion",
+                        "category": "provider_confusion",
+                        "status": "blocking",
+                        "title": "开发执行器被偷换成产品运行时",
+                        "evidence": "原意图要求 DeepSeek API；拟定契约只保留 Codex CLI",
+                        "question_for_human": "是否仍要求产品 Demo 使用 DeepSeek API 并输出金额？",
+                    }
+                ],
+                "verdict": "BLOCKED",
+            }
+        )
+
+        self.assertEqual(inspection["status"], "blocked")
+        self.assertIn("provider_confusion", {item["category"] for item in inspection["blockers"]})
+        self.assertIn("是否仍要求", "；".join(inspection["human_questions"]))
+
+    def test_handoff_names_both_intent_roles_and_prohibits_owner_creation(self):
+        contract = self.engine.compile_contract(ready_source())
+        handoff = self.engine.delivery_handoff(contract, self.engine.route(contract))
+
+        self.assertEqual(handoff["status"], "awaiting_intent_attestation")
+        self.assertFalse(handoff["owner_task"]["creation_allowed"])
+        self.assertEqual(
+            {item["display_name"] for item in handoff["intent_gate"]["tasks"]},
+            {"意图确认员", "意图检查员"},
+        )
+
+    def test_contract_change_after_intent_inspection_requires_reinspection(self):
+        source = ready_source()
+        source["goal"] = "Silently changed after the independent intent inspection"
+        contract = self.engine.compile_contract(source)
+
+        self.assertEqual(contract["status"], "needs_clarification")
+        self.assertIn(
+            "intent_contract_drift",
+            {item["id"] for item in contract["clarifications"]},
+        )
+
+    def test_low_risk_documentation_records_intent_exemption(self):
+        contract = self.engine.compile_contract(
+            {
+                "goal": "Correct a documentation typo",
+                "users": ["Documentation reader"],
+                "outcomes": ["The corrected word is visible"],
+                "acceptance_criteria": ["The page contains the corrected word"],
+                "non_goals": ["No product behavior changes"],
+                "deterministic_checks": ["python3 -m unittest"],
+                "change_types": ["documentation"],
+            }
+        )
+        plan = self.engine.route(contract)
+        handoff = self.engine.delivery_handoff(contract, plan)
+
+        self.assertEqual(contract["status"], "ready")
+        self.assertFalse(contract["intent_alignment"]["required"])
+        self.assertTrue(contract["intent_alignment"]["exemption_reason"])
+        self.assertEqual(handoff["status"], "ready_for_control_plane")
+        self.assertTrue(handoff["owner_task"]["creation_allowed"])
 
     def test_missing_oracle_and_boundaries_require_clarification(self):
         contract = self.engine.compile_contract({"goal": "Build it"})
@@ -40,6 +691,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(
             {item["id"] for item in contract["clarifications"]},
             {
+                "intent_brief",
+                "intent_inspection",
                 "target_users",
                 "observable_outcome",
                 "acceptance_criteria",
@@ -547,7 +1200,7 @@ class IntegrationAndScaffoldTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(protocol["schema_version"], "2.1")
+            self.assertEqual(protocol["schema_version"], "2.3")
             self.assertEqual(
                 protocol["bad_case_registry_hash"], registry["registry_hash"]
             )
@@ -570,7 +1223,8 @@ class IntegrationAndScaffoldTests(unittest.TestCase):
         plan = engine.route(contract)
         handoff = engine.delivery_handoff(contract, plan)
 
-        self.assertEqual(handoff["status"], "ready_for_control_plane")
+        self.assertEqual(handoff["status"], "awaiting_intent_attestation")
+        self.assertFalse(handoff["owner_task"]["creation_allowed"])
         self.assertEqual(handoff["owner_task"]["session"], "continuous_until_handoff_or_single_repair")
         self.assertFalse(handoff["executor"]["api_key_allowed"])
         self.assertTrue(handoff["inspector_tasks"])

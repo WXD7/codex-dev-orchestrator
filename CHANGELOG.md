@@ -1,6 +1,53 @@
 # 版本记录
 
-本项目采用语义化包版本；产品代号用于表达治理架构代际。`0.2.1` 对应 AI Delivery Governance V2.1。
+本项目采用语义化包版本；产品代号用于表达治理架构代际。`0.2.3` 对应 AI Delivery Governance V2.3。
+
+## [0.2.3] - 2026-08-25（V2.3 技术调研与有界赛马）
+
+### 开发前技术调研门禁
+
+- 新增 `compile_technology_research`，强制覆盖社区实践、近期高质量学术研究、至少两个开源框架及其官方仓库/文档；逐来源记录方法、主张、质量信号、局限和时效。
+- 框架适配矩阵覆盖需求、成熟度、维护、安全、集成、扩展、生态和许可证；只列一个框架、单一社区域名、陈旧论文无近期佐证、适配矩阵缺项都会失败关闭。
+- 新增全新只读“调研质检员”，禁止看到收集过程和候选实现，阻断选择偏差、来源错配和自我质检。
+- 高影响技术选择必须绑定通过质检的 `research_hash`。人的目标、范围、非目标和风险边界仍高于 AI 技术推荐；AI 可以扩大搜索，但不能改写人的产品意图。
+
+### 2–3 路有界技术赛马
+
+- 人在意图签署前选择 `single_path` 或 `bounded_race`；赛马必须冻结路径、数据、统一测试、评估维度、时间/成本预算、停止条件和融合权限。
+- 每条赛道使用唯一上下文和隔离 worktree，提交前互不可见，并绑定同一 contract/research/strategy/test/dimension 哈希。
+- 全新只读“统一赛马评测员”对所有赛道使用同一标尺，只能建议保留一路、融合明确优点或全部不合格；它看不到赛道 transcript，也不能替人作最终决定。
+- 新增 `attest_race_selection`：可信控制器把人的 keep/fuse/reject-all 决定绑定 evaluation hash。保留赢家继续原上下文；融合创建明确、全新的 integration owner；全部淘汰则在主实现前停止。
+
+### 接口、观察和验证
+
+- CLI 新增 `governance research`；无状态 MCP 新增 `compile_technology_research`，仍不暴露签署、Agent 启动或外部写工具。
+- HMAC 意图证据链扩展为 research/strategy/intent/inspection/contract/plan/external task；Review Packet 同时展示调研、评测和人类选路哈希。
+- Kandev 交接清单新增中文“技术调研员、调研质检员、技术赛道一/二/三、统一赛马评测员、技术路线裁决”，继续报告进展、困难、依赖和人工需要。
+- Kandev 0.91.0 原生“智能体监控”插件升级到 `0.3.1`：正式接入 Codex `SubagentStart` / `SubagentStop` 和协作工具 Hook，展示实时 Agent、父子/纠偏 DAG 与 4 秒刷新时间轴；Codex app-server 仅补全持久化历史，旧任务不再冒充实时运行。
+- 监控插件对停止结果、单/多目标纠偏和重复等待采用可证明语义；快照只保留 ID、枚举状态、时间与派生中文角色，历史同步器不继承 API Key 或 Token。插件只使用 Kandev 正式 Host API 和只读能力，不读取私有 Store/SQLite，也不创建第二套看板。
+- 包版本升级到 `0.2.3`，治理/运行/学习 Schema 升级到 `2.3`。本版本通过 200 项全仓回归、17 项监控插件专项测试、Go 服务端测试、静态编译和 Diff 检查。
+
+## [0.2.2] - 2026-08-25（V2.2 意图对齐门禁）
+
+### 开发前意图治理
+
+- 新增“意图确认员”，用 `compile_intent_brief` 编译原始要求、最终结果、验收样例、开发执行器、产品运行时、技术选型、非目标和风险边界。缺具体输入/输出样例或高影响技术选择时阻断。
+- 新增“意图检查员”，要求全新只读上下文同时对照原始要求、意图简报、技术调研、拟定契约和验收样例；逐项 coverage 不足或发现目标偷换、遗漏、供应商混淆、未确认默认、验收不可证明时一律 BLOCKED。
+- 非低风险契约必须哈希绑定意图简报和检查产物；纯文档/格式类任务可政策豁免，但会记录明确理由。
+
+### 可信开工门禁与可观测性
+
+- 新增 `attest_intent_alignment` / `validate_intent_alignment_attestation`，由可信控制器 HMAC 绑定 intent、inspection、contract、plan 和 external task；不暴露到 MCP。
+- `create_run_ledger` 在意图签署缺失、伪造、换契约、换计划或换任务时拒绝创建 owner。运行账本的首个签名事件同时绑定意图和契约答案 attestation。
+- 新增 `activate_delivery_handoff`：只有在重放一个全新、ready、签名有效的 ledger 后，才从 owner 蓝图派生 `creation_allowed=true` 的控制平面交接清单。
+- `delivery_handoff` 显示中文“意图确认员”和“意图检查员”的状态、进展、困难和人类需要；签署前 owner 蓝图显式 `creation_allowed=false`。
+
+### 德国法律计费反例与接口
+
+- 新增 `examples/legal-billing-intent-source.json`，明确开发执行器为本机已登录 Codex，产品 Demo 运行时为 DeepSeek 官方 API，只从 `DEEPSEEK_API_KEY` 环境变量读取密钥；最终金额由 Decimal 确定性引擎产生。
+- 回归固化“用户要 DeepSeek + 必须计算金额，拟契约却变成 Codex CLI + 不算金额”的故意失败案例，验证意图检查会在 outcome、example、technical choice 和 provider coverage 上阻断。
+- CLI 新增 `governance intent` 和 `governance inspect-intent`；无状态 MCP 新增 `compile_intent_brief` 和 `compile_intent_inspection`，工具数增至十一，仍无任务创建、批准、签名或外部写操作。
+- V2.2 在 Python 3.9+ 无第三方运行依赖约束下通过 188 项全量回归、静态编译和 Diff 检查。
 
 ## [0.2.1] - 2026-08-25（V2.1 二次融合）
 

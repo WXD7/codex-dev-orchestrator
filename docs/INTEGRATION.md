@@ -32,18 +32,29 @@ LobeHub 可保存和展示契约、计划、Operator Snapshot、Review Packet �
 
 推荐组合：
 
-1. LobeHub 形成目标并调用 `compile_work_contract`。
-2. 只把未解决的政策选择和领域事实显示为追问；工程不变量和可研究事实进入 owner/研究路线。
-3. 契约未就绪时不创建可写开发任务。人类回答经 `propose_contract_resolution` 形成 delta 后，由 Kandev 侧可信控制器签名绑定父契约、新契约、新计划和原 Kandev task；attestation 不通过 MCP。
-4. Kandev 侧先运行环境 capsule，确认 cwd、真实 Diff 根、权限、PATH、端口和锁。
-5. 控制器创建原子签名 ledger，把私有 control token 隔离在所有 Agent 上下文之外。
-6. 就绪契约、验证计划、Bad Case registry 和 calibration policy 作为 Kandev 任务附件或仓库 `.ai-delivery/` 文件。
-7. 调用 `build_delivery_handoff`，Kandev 只创建其中的主要开发 owner；确定性证据全部通过后，才按清单创建新的只读监察任务。
-8. 每次状态变化/心跳调用 `record_agent_progress()`；Kandev/LobeHub 用 `build_operator_snapshot()` 显示唯一 Agent 数、中文名、进展、困难、依赖、来源 task/session 和 shadow/blocking 模式。
-9. Kandev 的 Diff、测试和结构化复现包进入 `adjudicate_delivery`，跨通道同根因合并。新/变更 Inspector 的未校准发现保持可见但不阻塞。
-10. 返修只交回原 owner 会话；完整复验后新建盲审 verifier；再次失败停止。最后用 `build_human_review_packet()` 交给人，而不是把 Agent 完成态当批准。
+1. 外部研究 Agent/浏览器收集社区实践、近期高质量学术研究、至少两个开源框架及其官方资料，交给 `compile_technology_research`。另建全新只读调研质检上下文；治理层只编译证据，不自行联网。
+2. LobeHub 把原始对话、通过质检的 `research_hash` 和候选路径交给 `compile_intent_brief`，展示最终结果、开发执行器、产品运行时、技术选择理由、输入/输出样例、非目标和风险边界。人同时选择单一路线或 2–3 路有界赛马，并冻结测试、指标、预算、停止条件和融合权限。
+3. 创建全新只读意图检查上下文，对照原始对话、冻结调研、简报、拟定契约和验收样例提交 coverage/findings，再由 `compile_intent_inspection` 编译为 PASS/BLOCKED。检查员只提问，不修改或代答。
+4. LobeHub 形成目标并调用 `compile_work_contract`。只把未解决的政策选择和领域事实显示为追问；工程不变量和可研究事实进入 owner/研究路线。
+5. 契约未就绪时不创建可写开发任务。人类回答经 `propose_contract_resolution` 形成 delta 后，由 Kandev 侧可信控制器签名绑定父契约、新契约、新计划和原 Kandev task；attestation 不通过 MCP。
+6. 即使契约和意图检查已通过，可信控制器仍必须调用 `attest_intent_alignment()` 记录真实人的确认，绑定 research/strategy/intent/inspection/contract/plan/external task；该工具不进入 MCP。
+7. Kandev 侧先运行 environment capsule，确认 cwd、真实 Diff 根、权限、PATH、端口和锁。
+8. 控制器创建原子签名 ledger，把私有 control token 隔离在所有 Agent 上下文之外。缺有效意图 attestation 时 `create_run_ledger()` 拒绝创建实现任务。
+9. 就绪调研、意图、契约、验证计划、Bad Case registry 和 calibration policy 作为 Kandev 任务附件或仓库 `.ai-delivery/` 文件。
+10. 调用 `build_delivery_handoff` 得到 owner 蓝图、调研、赛马和意图任务的可视状态。赛马路径在独立 context/worktree 中使用同一冻结数据和测试且互不可见；统一评测员只读盲评。随后 `attest_race_selection()` 绑定人的 keep/fuse/reject-all 决定；签署前 main owner 不能创建，reject-all 直接停止。
+11. 每次状态变化/心跳调用 `record_agent_progress()`；Kandev/LobeHub 用 `build_operator_snapshot()` 显示唯一 Agent 数、中文名、进展、困难、依赖、来源 task/session 和 shadow/blocking 模式。
+12. Kandev 的 Diff、测试和结构化复现包进入 `adjudicate_delivery`，跨通道同根因合并。新/变更 Inspector 的未校准发现保持可见但不阻塞。
+13. 返修只交回原 owner 会话；完整复验后新建盲审 verifier；再次失败停止。最后用 `build_human_review_packet()` 交给人，而不是把 Agent 完成态当批准。
 
 Kandev MCP 中的任务创建、分支和交接仍由 Kandev 自己执行，本治理层不保存它们的镜像。
+
+### 原生智能体监控插件
+
+仓库内的 [`integrations/kandev-agent-observer`](../integrations/kandev-agent-observer/README.md) 是 Kandev 0.91.0 原生插件实现。它通过正式插件路由、侧边栏入口、任务卡标签、任务详情顶栏和任务面板，把 Kandev 自己持有的 task/session/message 投影为中文 Agent 视图；不读取 Kandev SQLite，不调用私有 Zustand Store，也不复制任务数据。
+
+总览显示任务/智能体数量、中文职责、工作、待人、等待、完成、失败和心跳健康；每张 Agent 卡显示使命、进展、困难、依赖、下一步和来源任务。只有 `author_type=agent` 的约定格式消息被视为结构化心跳，其他状态明确标为 `Kandev 推断`，避免把推断伪装成 Agent 自报。前端所有页面和任务卡共享一个 12 秒轮询器。
+
+构建与安装命令、插件能力声明和兼容边界见插件 README。安装后从 Kandev 侧边栏进入 `智能体监控`，或打开 `/ai-delivery-observer`。Kandev 0.91.0 尚未提供任务列表行摘要插槽，因此本实现没有通过 DOM 注入或私有 Store 强行扩展该页面。
 
 实际安装和 Profile/MCP 配置见 `governance init` 生成的 `.ai-delivery/KANDEV_RUNBOOK.md`。这里有三个不能静默越过的上游边界：
 

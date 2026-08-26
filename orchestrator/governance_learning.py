@@ -1,4 +1,4 @@
-"""Pure calibration and Bad Case compilation for governance V2.1.
+"""Pure calibration and Bad Case compilation for governance V2.3.
 
 This module never runs an evaluator, persists a registry, or promotes a case on
 its own.  It compiles human-owned evidence into hash-bound artifacts that an
@@ -14,7 +14,7 @@ import re
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 
-LEARNING_VERSION = "2.1"
+LEARNING_VERSION = "2.3"
 CASE_STATUSES = frozenset({"candidate", "confirmed", "retired"})
 CASE_SEVERITIES = frozenset({"low", "medium", "high", "critical"})
 EVIDENCE_CLASSES = frozenset(

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from orchestrator.cli import main
 from tests.helpers import make_git_repo
-from tests.test_governance import ready_source
+from tests.test_governance import ready_source, research_source_from
 
 
 class GovernanceCLITests(unittest.TestCase):
@@ -20,6 +20,60 @@ class GovernanceCLITests(unittest.TestCase):
             status = main(arguments)
         self.assertEqual(status, 0)
         return json.loads(output.getvalue())
+
+    def test_intent_confirmation_and_inspection_are_pure_cli_operations(self):
+        aligned = ready_source()["intent_alignment"]
+        brief_fixture = aligned["brief"]
+        research = self.call_with_stdin(
+            ["governance", "research"],
+            research_source_from(brief_fixture["technology_research"]),
+        )
+        brief = self.call_with_stdin(
+            ["governance", "intent"],
+            {
+                key: brief_fixture[key]
+                for key in (
+                    "original_request",
+                    "conversation_refs",
+                    "expected_outcomes",
+                    "acceptance_examples",
+                    "development_executor",
+                    "product_runtime",
+                    "technical_choices",
+                    "technology_research",
+                    "technology_strategy",
+                    "non_goals",
+                    "risk_boundaries",
+                    "research_refs",
+                    "unresolved_questions",
+                )
+            },
+        )
+        inspection_fixture = aligned["inspection"]
+        inspection = self.call_with_stdin(
+            ["governance", "inspect-intent"],
+            {
+                "brief": brief,
+                "proposed_contract_source": inspection_fixture[
+                    "proposed_contract_source"
+                ],
+                "technology_research": inspection_fixture[
+                    "technology_research"
+                ],
+                "research_evidence": inspection_fixture["research_evidence"],
+                "evidence_inputs": inspection_fixture["evidence_inputs"],
+                "inspector_declaration": inspection_fixture[
+                    "inspector_declaration"
+                ],
+                "coverage": inspection_fixture["coverage"],
+                "findings": inspection_fixture["findings"],
+                "verdict": inspection_fixture["requested_verdict"],
+            },
+        )
+
+        self.assertEqual(brief["status"], "ready_for_inspection")
+        self.assertEqual(research["status"], "pass")
+        self.assertEqual(inspection["status"], "pass")
 
     def test_compile_route_contexts_handoff_and_adjudicate_round_trip(self):
         contract = self.call_with_stdin(["governance", "compile"], ready_source())
@@ -50,7 +104,7 @@ class GovernanceCLITests(unittest.TestCase):
 
         self.assertEqual(plan["contract_hash"], contract["contract_hash"])
         self.assertTrue(contexts["contexts"])
-        self.assertEqual(handoff["status"], "ready_for_control_plane")
+        self.assertEqual(handoff["status"], "awaiting_intent_attestation")
         self.assertEqual(verdict["decision"], "ready_for_final_verification")
 
     def test_blueprint_and_init_are_stateless_and_do_not_overwrite(self):
@@ -85,7 +139,10 @@ class GovernanceCLITests(unittest.TestCase):
             self.assertEqual(status, 0)
             result = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(result["contract_status"], "ready")
-            self.assertEqual(len(result["files"]), 10)
+            self.assertEqual(len(result["files"]), 13)
+            self.assertTrue((repo / ".ai-delivery" / "technology-research.json").is_file())
+            self.assertTrue((repo / ".ai-delivery" / "intent-brief.json").is_file())
+            self.assertTrue((repo / ".ai-delivery" / "intent-inspection.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "integrations.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "delivery-handoff.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "bad-case-registry.json").is_file())

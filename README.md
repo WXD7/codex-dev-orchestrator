@@ -1,7 +1,12 @@
-# AI Delivery Governance V2.1
+# AI Delivery Governance V2.3
 
 这条分支把原来的“自研多 Agent 看板”重构为一层薄而确定的 AI 交付治理能力。它不再复制成熟产品已经做好的 UI、任务、worktree、会话和 CI，而是把真正缺失的部分做成可复用协议：
 
+- 开发前由“意图确认员”固化结果、开发执行器、产品运行时、技术选型、验收样例和风险边界；
+- 在意图确认前强制完成社区实践、近期高质量学术研究、开源框架和官方一手资料四路调研，并由全新只读“调研质检员”检查来源、方法、时效、许可证、安全、维护和适配性；
+- 当 2–3 条路径都可行且存在文档无法消除的真实未知时，由人决定是否开启有界技术赛马，冻结统一数据、测试、评估维度、时间/成本预算、停止条件和融合权限；
+- 赛道使用互不可见的独立上下文/worktree；全新只读“统一赛马评测员”只建议保留、融合明确优点或全部淘汰，最终路线由人再次签署；
+- 由全新只读上下文的“意图检查员”对照原始对话、调研、意图简报和拟定契约，阻断目标偷换、遗漏、供应商混淆和未确认默认；
 - 把 Spec Kit 或人类确认过的需求编译成不可静默漂移的工作契约；
 - 用 Question Ledger 记录决策 ID、影响、验收关联、后果、默认方案、负责人、可逆性和答案；
 - 根据风险决定保持单一 Codex 上下文，还是开启哪些独立监察通道；
@@ -18,7 +23,7 @@
 - 第二次仍不收敛、存在争议或即将产生外部/不可逆效果时交给人；
 - 通过无状态 MCP 同时服务 LobeHub、Kandev、Symphony 和 Codex。
 
-它不调用模型 API，不接受模型 API Key，也不持有任务、审批、分支或 Agent 会话。V2.1 的窄运行账本由外部可信控制器持有，只保存阶段产物摘要、签名事件、Agent 进展和恢复指标；控制令牌绝不交给 Agent。
+它自身不调用模型 API，不接受模型 API Key，也不持有任务、审批、分支或 Agent 会话。这不等于禁止被交付产品使用经人确认的模型 API：产品只能从指定环境变量读取密钥，密钥不得进入治理输入、Prompt、日志或 Git。V2.3 的窄运行账本由外部可信控制器持有，只保存阶段产物摘要、签名事件、Agent 进展和恢复指标；控制令牌绝不交给 Agent。
 
 ## 组合架构
 
@@ -36,10 +41,15 @@
 
 ```text
 LobeHub 接收目标和人类决定
-  → Spec Kit 澄清并形成规格
+  → 技术调研员执行社区 / 近期学术 / 开源 / 官方四路搜索
+  → 全新只读调研质检员检查证据质量和候选适配性
+  → 意图确认员整理可见结果、技术选择和验收样例
+  → 全新只读意图检查员对照原始对话、调研、简报和拟定契约独立反证
   → 本治理层编译 Question Ledger、契约和风险计划
-  → 人类答案形成 delta，可信控制器签名并绑定同一外部任务
+  → 人类答案形成 delta；如意图字段改变则重新独立检查
+  → 人确认最终展示内容和单路/赛马策略，可信控制器签名绑定 research / strategy / intent / inspection / contract / plan / 同一外部任务
   → 环境 capsule 证明 cwd、权限、工具、端口、锁和真实 Diff 根
+  → 如启用赛马：2–3 条隔离路径并行 → 统一盲评 → 人签署保留/融合/全部淘汰
   → Kandev 或 Symphony 驱动本地 Codex
   → 确定性 CI 先运行
   → 三条正交监察 + 风险扩展通道独立反证
@@ -51,10 +61,28 @@ LobeHub 接收目标和人类决定
 
 ## 快速体验治理内核
 
-编译工作契约：
+技术调研门禁先于意图确认运行：
 
 ```bash
-python3 run.py governance compile --input examples/legal-billing-contract-source.json \
+python3 run.py governance research --input technology-research-source.json \
+  --output /tmp/technology-research.json
+```
+
+把通过质检的 `technology_research` 和人的 `technology_strategy` 放入意图输入后运行：
+
+```bash
+python3 run.py governance intent --input examples/legal-billing-intent-source.json \
+  --output /tmp/legal-billing-intent.json
+```
+
+仓库中的法律计费文件刻意保留为“研究前模板”，不会伪造真实社区/学术来源；直接运行会得到 `needs_clarification`。测试会注入冻结研究 fixture 来验证协议，真实项目必须把 `governance research` 的通过产物和人的策略选择写入副本后再编译。
+
+`governance inspect-intent` 再接收该简报、原始调研、拟定契约、逐项 coverage 和全新只读检查员的 findings。只有 `PASS` 且无阻断项才能绑入契约。
+
+将通过的 brief/inspection 放入 `intent_alignment` 后编译工作契约：
+
+```bash
+python3 run.py governance compile --input aligned-contract-source.json \
   --output /tmp/legal-billing-contract.json
 ```
 
@@ -87,7 +115,7 @@ python3 run.py governance init \
   --input examples/legal-billing-contract-source.json
 ```
 
-该命令只创建 `.ai-delivery/`，且拒绝覆盖已有文件。V2.1 额外生成 `runtime-protocol.json`、`bad-case-registry.json` 和 `calibration-policy.json`，记录问题恢复、原子检查点、实时监控、遥测、盲审和学习闭环协议。
+该命令只创建 `.ai-delivery/`，且拒绝覆盖已有文件。V2.3 额外生成 `technology-research.json`、`intent-brief.json`、`intent-inspection.json`、`runtime-protocol.json`、`bad-case-registry.json` 和 `calibration-policy.json`，记录开发前调研、技术策略、意图证据、赛马、问题恢复、原子检查点、实时监控、遥测、盲审和学习闭环协议。
 
 ## 接入 LobeHub 或 Kandev
 
@@ -97,10 +125,13 @@ python3 run.py governance init \
 python3 run.py governance-mcp
 ```
 
-MCP 暴露九个纯计算工具：
+MCP 暴露十二个纯计算工具：
 
 | 工具 | 作用 |
 | --- | --- |
+| `compile_technology_research` | 编译四路调研、框架适配矩阵、多条技术路径和独立质检结果，但不联网或替人选路 |
+| `compile_intent_brief` | 编译意图确认简报和人类问题，但不代替人确认 |
+| `compile_intent_inspection` | 编译全新只读检查员的 coverage、反例和 PASS/BLOCKED 结果 |
 | `compile_work_contract` | 契约编译、追问缺口、风险信号 |
 | `propose_contract_resolution` | 把人类/专家答案编译成待可信控制器签名的契约 delta |
 | `compile_bad_case_registry` | 把人工确认的 Good/Bad Case 编译成版本化隐藏回归表 |
@@ -113,11 +144,15 @@ MCP 暴露九个纯计算工具：
 
 这组工具不能运行 Agent、修改任务、批准、写代码、push、合并或部署。契约 delta 的最终 HMAC attestation、运行账本、实时快照和 Review Packet 只在可信控制器运行库中完成，不进入 MCP。LobeHub 继续持有人类界面，Kandev 继续持有研发任务和 worktree。
 
+Kandev 0.91.0 可安装仓库内的 [原生智能体监控插件](integrations/kandev-agent-observer/README.md)。它在 Kandev 侧边栏、任务卡、任务详情顶栏和任务面板显示中文 Agent 职责、进展、困难、依赖、下一步、心跳、执行状态与交付评审，不建立第二套任务数据或看板。
+
 项目级 Codex Skill 位于 `.agents/skills/ai-delivery-governance/`，把契约、验证和证据裁决规则带入兼容 Agent。
 
 详细说明见：
 
-- [V2.1 版本说明](CHANGELOG.md)
+- [V2.3 版本说明](CHANGELOG.md)
+- [V2.3 技术调研与有界赛马](docs/V2_3_TECH_RESEARCH_RACE.md)
+- [V2.2 意图对齐实现](docs/V2_2_INTENT_ALIGNMENT.md)
 - [新架构](docs/ARCHITECTURE.md)
 - [V2.1 融合实现与德国计费回放](docs/V2_IMPLEMENTATION.md)
 - [产品与质量需求](docs/AI_NATIVE_DELIVERY_REQUIREMENTS.md)

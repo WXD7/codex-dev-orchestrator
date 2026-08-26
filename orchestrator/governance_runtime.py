@@ -1,4 +1,4 @@
-"""V2.1 runtime invariants for an external AI delivery control plane.
+"""V2.3 runtime invariants for an external AI delivery control plane.
 
 The governance MCP remains stateless.  This module supplies a narrow, caller-
 owned checkpoint ledger for Kandev, Symphony, or another trusted controller.
@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 
-LEDGER_VERSION = "2.1"
+LEDGER_VERSION = "2.3"
 PASS_STATUSES = frozenset({"pass", "passed"})
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 STOP_REASONS = frozenset(
@@ -60,6 +60,9 @@ INSPECTOR_ENFORCEMENT_MODES = frozenset(
 )
 STAGE_PRESENTATION = {
     "environment_preflight": "环境预检",
+    "parallel_technology_race": "并行技术赛马",
+    "race_evaluation": "统一赛马评测",
+    "race_human_selection": "技术路线裁决",
     "owner_implementation": "主实现",
     "deterministic_ci": "确定性门禁",
     "independent_inspection": "独立检查",
@@ -96,6 +99,186 @@ def generate_control_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _intent_attestation_body(attestation: Mapping[str, Any]) -> Dict[str, Any]:
+    if not isinstance(attestation, Mapping):
+        raise ValueError("intent alignment attestation must be an object")
+    return {
+        key: copy.deepcopy(value)
+        for key, value in attestation.items()
+        if key not in {"attestation_hash", "controller_signature"}
+    }
+
+
+def validate_intent_alignment_attestation(
+    attestation: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    control_token: str,
+) -> Dict[str, Any]:
+    """Verify the human confirmation that must precede owner creation."""
+    token = _require_token(control_token)
+    body = _intent_attestation_body(attestation)
+    if body.get("schema_version") != LEDGER_VERSION or body.get("status") != "attested":
+        raise ValueError("intent alignment attestation is not an attested V2.3 artifact")
+    alignment = contract.get("intent_alignment") or {}
+    expected = {
+        "intent_hash": alignment.get("intent_hash"),
+        "inspection_hash": alignment.get("inspection_hash"),
+        "research_hash": alignment.get("research_hash"),
+        "technology_strategy_hash": alignment.get("technology_strategy_hash"),
+        "contract_hash": contract.get("contract_hash"),
+        "plan_hash": plan.get("plan_hash"),
+    }
+    for field, expected_value in expected.items():
+        if body.get(field) != expected_value:
+            raise ValueError("intent attestation does not belong to the %s" % field)
+    if plan.get("contract_hash") != contract.get("contract_hash"):
+        raise ValueError("plan does not belong to the intent-confirmed contract")
+    human = body.get("human_attestation") or {}
+    if not isinstance(human, Mapping):
+        raise ValueError("human_attestation must be an object")
+    if human.get("approved_intent_hash") != expected["intent_hash"]:
+        raise ValueError("human attestation approved a different intent brief")
+    if human.get("approved_inspection_hash") != expected["inspection_hash"]:
+        raise ValueError("human attestation approved a different intent inspection")
+    if human.get("approved_research_hash") != expected["research_hash"]:
+        raise ValueError("human attestation approved different technology research")
+    if (
+        human.get("approved_technology_strategy_hash")
+        != expected["technology_strategy_hash"]
+    ):
+        raise ValueError("human attestation approved a different technology strategy")
+    if not str(human.get("attested_by") or "").strip() or not str(
+        human.get("evidence") or ""
+    ).strip():
+        raise ValueError("human attestation requires attested_by and evidence")
+    if human.get("authority") != "human":
+        raise ValueError("intent alignment attestation requires human authority")
+    if not str(body.get("external_task_ref") or "").strip():
+        raise ValueError("intent attestation must bind the external task")
+    if body.get("control_token_sha256") != hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest():
+        raise ValueError("intent attestation names a different controller token")
+    attestation_hash = str(attestation.get("attestation_hash") or "")
+    if attestation_hash != _sha256(body):
+        raise ValueError("intent alignment attestation hash is invalid")
+    signature = hmac.new(
+        token.encode("utf-8"), attestation_hash.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(
+        str(attestation.get("controller_signature") or ""), signature
+    ):
+        raise ValueError("intent alignment controller signature is invalid")
+    return copy.deepcopy(dict(attestation))
+
+
+def attest_intent_alignment(
+    contract: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    human_attestation: Mapping[str, Any],
+    control_token: str,
+    external_task_ref: str,
+) -> Dict[str, Any]:
+    """Record a controller-signed human confirmation of the displayed intent.
+
+    The stateless MCP intentionally does not expose this function.  A trusted
+    human-facing controller owns identity proof and the unexposed token.
+    """
+    token = _require_token(control_token)
+    from .governance import GovernanceEngine
+
+    engine = GovernanceEngine()
+    engine._validate_plan(contract, plan)
+    alignment = contract.get("intent_alignment") or {}
+    if not alignment.get("required"):
+        raise ValueError("intent alignment attestation is not required for this contract")
+    if alignment.get("status") != "pass_pending_human_attestation":
+        raise ValueError("intent alignment must pass independent inspection first")
+    if contract.get("status") != "ready":
+        raise ValueError("contract must be ready before intent attestation")
+    if not isinstance(human_attestation, Mapping):
+        raise ValueError("human_attestation must be an object")
+    human = {
+        "attested_by": _short_text(
+            human_attestation.get("attested_by"), "attested_by", required=True, limit=200
+        ),
+        "authority": _short_text(
+            human_attestation.get("authority"), "attestation authority", limit=80
+        )
+        or "human",
+        "evidence": _short_text(
+            human_attestation.get("evidence"),
+            "attestation evidence",
+            required=True,
+            limit=4000,
+        ),
+        "approved_intent_hash": _short_text(
+            human_attestation.get("approved_intent_hash"),
+            "approved_intent_hash",
+            required=True,
+            limit=64,
+        ),
+        "approved_inspection_hash": _short_text(
+            human_attestation.get("approved_inspection_hash"),
+            "approved_inspection_hash",
+            required=True,
+            limit=64,
+        ),
+        "approved_research_hash": _short_text(
+            human_attestation.get("approved_research_hash"),
+            "approved_research_hash",
+            required=True,
+            limit=64,
+        ),
+        "approved_technology_strategy_hash": _short_text(
+            human_attestation.get("approved_technology_strategy_hash"),
+            "approved_technology_strategy_hash",
+            required=True,
+            limit=64,
+        ),
+    }
+    if human["authority"] != "human":
+        raise ValueError("intent alignment attestation requires human authority")
+    if human["approved_intent_hash"] != alignment.get("intent_hash"):
+        raise ValueError("human attestation approved a different intent brief")
+    if human["approved_inspection_hash"] != alignment.get("inspection_hash"):
+        raise ValueError("human attestation approved a different intent inspection")
+    if human["approved_research_hash"] != alignment.get("research_hash"):
+        raise ValueError("human attestation approved different technology research")
+    if human["approved_technology_strategy_hash"] != alignment.get(
+        "technology_strategy_hash"
+    ):
+        raise ValueError("human attestation approved a different technology strategy")
+    task_ref = _short_text(
+        external_task_ref, "external_task_ref", required=True, limit=300
+    )
+    body = {
+        "schema_version": LEDGER_VERSION,
+        "status": "attested",
+        "intent_hash": alignment.get("intent_hash"),
+        "inspection_hash": alignment.get("inspection_hash"),
+        "research_hash": alignment.get("research_hash"),
+        "technology_strategy_hash": alignment.get("technology_strategy_hash"),
+        "contract_hash": contract.get("contract_hash"),
+        "plan_hash": plan.get("plan_hash"),
+        "external_task_ref": task_ref,
+        "human_attestation": human,
+        "attested_at": _timestamp(),
+        "control_token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+    }
+    attestation_hash = _sha256(body)
+    signature = hmac.new(
+        token.encode("utf-8"), attestation_hash.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    artifact = {
+        **body,
+        "attestation_hash": attestation_hash,
+        "controller_signature": signature,
+    }
+    return validate_intent_alignment_attestation(artifact, contract, plan, token)
+
+
 def _resolution_attestation_body(
     attestation: Mapping[str, Any],
 ) -> Dict[str, Any]:
@@ -117,8 +300,8 @@ def validate_contract_resolution_attestation(
     """Verify a controller-signed human resolution before a new run starts."""
     token = _require_token(control_token)
     body = _resolution_attestation_body(attestation)
-    if body.get("schema_version") != "2.1" or body.get("status") != "attested":
-        raise ValueError("contract resolution attestation is not an attested V2.1 artifact")
+    if body.get("schema_version") != LEDGER_VERSION or body.get("status") != "attested":
+        raise ValueError("contract resolution attestation is not an attested V2.3 artifact")
     if body.get("proposed_contract_hash") != contract.get("contract_hash"):
         raise ValueError("resolution attestation does not belong to the contract")
     if body.get("proposed_plan_hash") != plan.get("plan_hash"):
@@ -195,7 +378,10 @@ def attest_contract_resolution(
     engine = GovernanceEngine()
     engine.route(parent_contract)
     handoff = engine.delivery_handoff(proposed_contract, proposed_plan)
-    if handoff.get("status") != "ready_for_control_plane":
+    if handoff.get("status") not in {
+        "ready_for_control_plane",
+        "awaiting_intent_attestation",
+    }:
         raise ValueError("resolved contract and plan are not ready for the control plane")
 
     if not isinstance(human_attestation, Mapping):
@@ -262,7 +448,7 @@ def attest_contract_resolution(
         }
 
     body = {
-        "schema_version": "2.1",
+        "schema_version": LEDGER_VERSION,
         "status": "attested",
         "parent_contract_hash": parent_contract.get("contract_hash"),
         "proposed_contract_hash": proposed_contract.get("contract_hash"),
@@ -321,6 +507,7 @@ def create_run_ledger(
     control_token: str,
     run_id: str = "",
     resolution_attestation: Optional[Mapping[str, Any]] = None,
+    intent_attestation: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Create a signed checkpoint ledger without persisting the controller token."""
     token = _require_token(control_token)
@@ -330,6 +517,9 @@ def create_run_ledger(
         raise ValueError("plan does not belong to the contract")
     if contract.get("status") != "ready":
         raise ValueError("contract must be ready before owner creation")
+    from .governance import GovernanceEngine
+
+    GovernanceEngine()._validate_plan(contract, plan)
     resolution = (
         validate_contract_resolution_attestation(
             resolution_attestation, contract, plan, token
@@ -337,6 +527,20 @@ def create_run_ledger(
         if resolution_attestation is not None
         else {}
     )
+    alignment = contract.get("intent_alignment") or {}
+    if alignment.get("required") and intent_attestation is None:
+        raise ValueError(
+            "valid intent alignment attestation is required before owner creation"
+        )
+    intent = (
+        validate_intent_alignment_attestation(
+            intent_attestation, contract, plan, token
+        )
+        if intent_attestation is not None
+        else {}
+    )
+    if not alignment.get("required") and intent:
+        raise ValueError("intent attestation supplied for a policy-exempt contract")
     stages = list(plan.get("sequence") or [])
     if not stages:
         raise ValueError("plan sequence is required")
@@ -360,6 +564,7 @@ def create_run_ledger(
         },
         "agents": {},
         "resolution_attestation": resolution,
+        "intent_attestation": intent,
         "events": [],
         "metrics": {
             "duration_ms": 0,
@@ -375,16 +580,158 @@ def create_run_ledger(
             "ledger_created",
             "",
             "ready",
-            _sha256(resolution),
+            _sha256({"resolution": resolution, "intent": intent}),
             token,
             {
                 "resolution_attestation_hash": resolution.get(
                     "attestation_hash", ""
-                )
+                ),
+                "intent_attestation_hash": intent.get("attestation_hash", ""),
             },
         )
     )
     return ledger
+
+
+def activate_delivery_handoff(
+    contract: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    control_token: str,
+) -> Dict[str, Any]:
+    """Project a verified signed ledger into an owner-creation manifest.
+
+    ``delivery_handoff`` is stateless and therefore shows a required intent gate
+    as pending.  Only this trusted-controller boundary can turn the owner
+    blueprint into a creatable task, after replaying the signed creation event.
+    """
+    token = _require_token(control_token)
+    from .governance import GovernanceEngine
+
+    engine = GovernanceEngine()
+    engine._validate_plan(contract, plan)
+    replay = replay_run_ledger(ledger, plan, token)
+    race = plan.get("technology_race") or {}
+    completed = list(replay.get("completed_stages") or [])
+    allowed_race_prefix = [
+        "environment_preflight",
+        "parallel_technology_race",
+        "race_evaluation",
+        "race_human_selection",
+    ]
+    if replay.get("status") != "ready" or (
+        completed
+        and (
+            not race.get("enabled")
+            or completed != allowed_race_prefix[: len(completed)]
+        )
+    ):
+        raise ValueError("handoff activation requires a ready pre-owner ledger")
+    if ledger.get("contract_hash") != contract.get("contract_hash"):
+        raise ValueError("ledger does not belong to the handoff contract")
+    alignment = contract.get("intent_alignment") or {}
+    if alignment.get("required") and not ledger.get("intent_attestation"):
+        raise ValueError("signed ledger is missing the required intent attestation")
+
+    activated = copy.deepcopy(engine.delivery_handoff(contract, plan))
+    if activated.get("status") not in {
+        "awaiting_intent_attestation",
+        "ready_for_control_plane",
+    }:
+        raise ValueError("delivery handoff is not eligible for activation")
+    selection = _prior_artifacts(ledger, "race_human_selection").get(
+        "race_selection_attestation"
+    ) or {}
+    race_selected = bool(selection)
+    activated["status"] = "ready_for_control_plane"
+    activated["next_action"] = (
+        "create_human_selected_owner"
+        if race_selected
+        else (
+            "run_environment_preflight_then_create_race_tasks"
+            if race.get("enabled")
+            else "run_environment_preflight_then_create_owner"
+        )
+    )
+    activated["activation_evidence"] = {
+        "run_id": ledger.get("run_id"),
+        "ledger_creation_event_hash": ((ledger.get("events") or [{}])[0]).get(
+            "event_hash", ""
+        ),
+        "intent_attestation_hash": (ledger.get("intent_attestation") or {}).get(
+            "attestation_hash", ""
+        ),
+    }
+    intent_gate = activated.get("intent_gate") or {}
+    intent_gate["owner_creation_allowed"] = not race.get("enabled") or race_selected
+    intent_gate["activation_condition"] = "verified by the signed ready ledger"
+    for task in intent_gate.get("tasks") or []:
+        if task.get("id") == "intent-confirmer":
+            task["execution_state"] = "finished"
+            task["progress_summary"] = "人类意图签署已由可信控制器验签"
+            task["current_difficulty"] = "无"
+            task["needs_human"] = False
+    owner = activated.get("owner_task") or {}
+    owner["creation_allowed"] = not race.get("enabled") or race_selected
+    owner["activation"] = (
+        "after_signed_race_selection"
+        if race_selected
+        else (
+            "after_valid_human_race_selection"
+            if race.get("enabled")
+            else "after_signed_ledger_and_environment_preflight"
+        )
+    )
+    monitoring = owner.get("monitoring_contract") or {}
+    monitoring.update(
+        {
+            "execution_state": "queued" if owner["creation_allowed"] else "waiting_on_dependency",
+            "progress_summary": (
+                "技术路线已由人裁决，可以创建主实现"
+                if race_selected
+                else (
+                    "意图门禁已通过，等待技术赛马裁决"
+                    if race.get("enabled")
+                    else "意图门禁已通过，等待环境预检"
+                )
+            ),
+            "current_difficulty": "无；尚未启动" if owner["creation_allowed"] else "尚无经人签署的赛马结果",
+            "needs_human": False,
+            "dependency": "" if race_selected else (
+                "race_human_selection" if race.get("enabled") else "environment_preflight"
+            ),
+        }
+    )
+    activated_race = activated.get("technology_race") or {}
+    activated_race["owner_creation_allowed"] = owner["creation_allowed"]
+    for task in activated_race.get("race_tasks") or []:
+        task_monitoring = task.get("monitoring_contract") or {}
+        if not completed:
+            task_monitoring.update(
+                {
+                    "execution_state": "waiting_on_dependency",
+                    "progress_summary": "意图门禁已通过，等待环境预检",
+                    "current_difficulty": "无；尚未启动",
+                    "needs_human": False,
+                    "dependency": "environment_preflight",
+                }
+            )
+    if race_selected:
+        human_task = activated_race.get("human_selection_task") or {}
+        human_monitoring = human_task.get("monitoring_contract") or {}
+        human_monitoring.update(
+            {
+                "execution_state": "finished",
+                "progress_summary": "人类技术路线裁决已由可信控制器验签",
+                "current_difficulty": "无",
+                "needs_human": False,
+                "dependency": "",
+            }
+        )
+        activated["activation_evidence"]["race_selection_attestation_hash"] = selection.get(
+            "attestation_hash", ""
+        )
+    return activated
 
 
 def _short_text(value: Any, name: str, required: bool = False, limit: int = 2000) -> str:
@@ -590,6 +937,27 @@ def build_human_review_packet(
         "contract_id": ledger.get("contract_id"),
         "contract_hash": ledger.get("contract_hash"),
         "plan_hash": ledger.get("plan_hash"),
+        "intent": {
+            "attested": bool(ledger.get("intent_attestation")),
+            "attestation_hash": (ledger.get("intent_attestation") or {}).get(
+                "attestation_hash", ""
+            ),
+            "intent_hash": (ledger.get("intent_attestation") or {}).get(
+                "intent_hash", ""
+            ),
+            "inspection_hash": (ledger.get("intent_attestation") or {}).get(
+                "inspection_hash", ""
+            ),
+            "research_hash": (ledger.get("intent_attestation") or {}).get(
+                "research_hash", ""
+            ),
+            "technology_strategy_hash": (
+                ledger.get("intent_attestation") or {}
+            ).get("technology_strategy_hash", ""),
+            "external_task_ref": (ledger.get("intent_attestation") or {}).get(
+                "external_task_ref", ""
+            ),
+        },
         "resolution": {
             "attested": bool(ledger.get("resolution_attestation")),
             "attestation_hash": (
@@ -601,6 +969,30 @@ def build_human_review_packet(
             "external_task_ref": (
                 ledger.get("resolution_attestation") or {}
             ).get("external_task_ref", ""),
+        },
+        "technology_race": {
+            "enabled": bool((plan.get("technology_race") or {}).get("enabled")),
+            "research_hash": (plan.get("technology_race") or {}).get(
+                "research_hash", ""
+            ),
+            "evaluation_hash": _race_evaluation_from_ledger(ledger).get(
+                "evaluation_hash", ""
+            ),
+            "selection_attestation_hash": (
+                _prior_artifacts(ledger, "race_human_selection").get(
+                    "race_selection_attestation"
+                )
+                or {}
+            ).get("attestation_hash", ""),
+            "human_decision": (
+                (
+                    _prior_artifacts(ledger, "race_human_selection").get(
+                        "race_selection_attestation"
+                    )
+                    or {}
+                ).get("human_selection")
+                or {}
+            ).get("decision", ""),
         },
         "execution": snapshot["execution"],
         "delivery_verdict": snapshot["delivery_verdict"],
@@ -660,11 +1052,220 @@ def _is_digest(value: Any) -> bool:
     return isinstance(value, str) and bool(HEX_64.match(value))
 
 
+def _race_evaluation_from_ledger(ledger: Mapping[str, Any]) -> Mapping[str, Any]:
+    evaluation = _prior_artifacts(ledger, "race_evaluation").get("race_evaluation") or {}
+    return evaluation if isinstance(evaluation, Mapping) else {}
+
+
+def _race_reports_from_ledger(ledger: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+    reports = _prior_artifacts(ledger, "parallel_technology_race").get("race_reports")
+    if not isinstance(reports, list):
+        return []
+    return [item for item in reports if isinstance(item, Mapping)]
+
+
+def _race_selection_body(attestation: Mapping[str, Any]) -> Dict[str, Any]:
+    if not isinstance(attestation, Mapping):
+        raise ValueError("race selection attestation must be an object")
+    return {
+        key: copy.deepcopy(value)
+        for key, value in attestation.items()
+        if key not in {"attestation_hash", "controller_signature"}
+    }
+
+
+def validate_race_selection_attestation(
+    attestation: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    control_token: str,
+) -> Dict[str, Any]:
+    """Verify a controller-signed human route decision after blind race evaluation."""
+    token = _require_token(control_token)
+    body = _race_selection_body(attestation)
+    if body.get("schema_version") != LEDGER_VERSION or body.get("status") != "attested":
+        raise ValueError("race selection is not an attested V2.3 artifact")
+    race = plan.get("technology_race") or {}
+    if not race.get("enabled"):
+        raise ValueError("race selection was supplied for a plan without a race")
+    evaluation = _race_evaluation_from_ledger(ledger)
+    evaluation_hash = str(evaluation.get("evaluation_hash") or "")
+    expected = {
+        "contract_hash": ledger.get("contract_hash"),
+        "plan_hash": plan.get("plan_hash"),
+        "research_hash": race.get("research_hash"),
+        "strategy_hash": race.get("strategy_hash"),
+        "evaluation_hash": evaluation_hash,
+    }
+    for field, expected_value in expected.items():
+        if body.get(field) != expected_value:
+            raise ValueError("race selection does not belong to the %s" % field)
+    human = body.get("human_selection") or {}
+    if not isinstance(human, Mapping):
+        raise ValueError("human_selection must be an object")
+    if human.get("authority") != "human":
+        raise ValueError("race selection requires human authority")
+    if human.get("approved_evaluation_hash") != evaluation_hash:
+        raise ValueError("human selected against a different race evaluation")
+    if not str(human.get("attested_by") or "").strip() or not str(
+        human.get("evidence") or ""
+    ).strip():
+        raise ValueError("race selection requires attested_by and evidence")
+    decision = str(human.get("decision") or "")
+    if decision not in {"keep_path", "fuse_paths", "reject_all"}:
+        raise ValueError("race selection decision is invalid")
+    selected = list(human.get("selected_path_ids") or [])
+    available = set(race.get("selected_path_ids") or [])
+    if len(set(selected)) != len(selected) or not set(selected) <= available:
+        raise ValueError("race selection names an invalid or duplicate path")
+    reports = {str(item.get("path_id")): item for item in _race_reports_from_ledger(ledger)}
+    if decision == "keep_path":
+        if len(selected) != 1:
+            raise ValueError("keep_path must select exactly one path")
+        expected_context = (reports.get(str(selected[0])) or {}).get("context_id")
+        if human.get("owner_context_id") != expected_context:
+            raise ValueError("kept path must continue its original owner context")
+        if human.get("integration_owner_context_id"):
+            raise ValueError("keep_path must not create a fusion integration owner")
+    elif decision == "fuse_paths":
+        if not race.get("fusion_allowed"):
+            raise ValueError("fusion was not authorized in the signed strategy")
+        if len(selected) not in {2, 3}:
+            raise ValueError("fusion must select two or three paths")
+        integration_owner = str(human.get("integration_owner_context_id") or "").strip()
+        candidate_contexts = {
+            str(item.get("context_id") or "") for item in reports.values()
+        }
+        if not integration_owner or integration_owner in candidate_contexts:
+            raise ValueError("fusion requires a new isolated integration owner context")
+        if human.get("owner_context_id") != integration_owner:
+            raise ValueError("fusion owner must be the declared integration owner")
+        if not list(human.get("selected_benefits") or []):
+            raise ValueError("fusion must name the explicit benefits to integrate")
+    else:
+        if selected or human.get("owner_context_id") or human.get(
+            "integration_owner_context_id"
+        ):
+            raise ValueError("reject_all must not authorize an owner")
+    if not str(body.get("external_task_ref") or "").strip():
+        raise ValueError("race selection must bind the external task")
+    if body.get("control_token_sha256") != hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest():
+        raise ValueError("race selection names a different controller token")
+    attestation_hash = str(attestation.get("attestation_hash") or "")
+    if attestation_hash != _sha256(body):
+        raise ValueError("race selection attestation hash is invalid")
+    expected_signature = hmac.new(
+        token.encode("utf-8"), attestation_hash.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(
+        str(attestation.get("controller_signature") or ""), expected_signature
+    ):
+        raise ValueError("race selection controller signature is invalid")
+    return copy.deepcopy(dict(attestation))
+
+
+def attest_race_selection(
+    ledger: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    human_selection: Mapping[str, Any],
+    control_token: str,
+    external_task_ref: str,
+) -> Dict[str, Any]:
+    """Create the trusted-controller artifact required before a race winner continues."""
+    token = _require_token(control_token)
+    replay = replay_run_ledger(ledger, plan, token)
+    if replay.get("next_stage") != "race_human_selection":
+        raise ValueError("race selection is allowed only after race evaluation")
+    if not isinstance(human_selection, Mapping):
+        raise ValueError("human_selection must be an object")
+    evaluation = _race_evaluation_from_ledger(ledger)
+    evaluation_hash = _short_text(
+        human_selection.get("approved_evaluation_hash"),
+        "approved_evaluation_hash",
+        required=True,
+        limit=64,
+    )
+    if evaluation_hash != evaluation.get("evaluation_hash"):
+        raise ValueError("human selected against a different race evaluation")
+    selected = human_selection.get("selected_path_ids") or []
+    if isinstance(selected, (str, bytes)) or not isinstance(selected, Sequence):
+        raise ValueError("selected_path_ids must be an array")
+    if len(selected) > 3:
+        raise ValueError("race selection cannot name more than three paths")
+    benefits = human_selection.get("selected_benefits") or []
+    if isinstance(benefits, (str, bytes)) or not isinstance(benefits, Sequence):
+        raise ValueError("selected_benefits must be an array")
+    human = {
+        "attested_by": _short_text(
+            human_selection.get("attested_by"), "attested_by", required=True, limit=200
+        ),
+        "authority": _short_text(
+            human_selection.get("authority"), "selection authority", limit=80
+        )
+        or "human",
+        "evidence": _short_text(
+            human_selection.get("evidence"),
+            "selection evidence",
+            required=True,
+            limit=4000,
+        ),
+        "approved_evaluation_hash": evaluation_hash,
+        "decision": _short_text(
+            human_selection.get("decision"), "selection decision", required=True, limit=40
+        ),
+        "selected_path_ids": [
+            _short_text(item, "selected path id", required=True, limit=120)
+            for item in list(selected)[:3]
+        ],
+        "selected_benefits": [
+            _short_text(item, "selected benefit", required=True, limit=1000)
+            for item in list(benefits)[:30]
+        ],
+        "owner_context_id": _short_text(
+            human_selection.get("owner_context_id"), "owner_context_id", limit=200
+        ),
+        "integration_owner_context_id": _short_text(
+            human_selection.get("integration_owner_context_id"),
+            "integration_owner_context_id",
+            limit=200,
+        ),
+    }
+    race = plan.get("technology_race") or {}
+    body = {
+        "schema_version": LEDGER_VERSION,
+        "status": "attested",
+        "contract_hash": ledger.get("contract_hash"),
+        "plan_hash": plan.get("plan_hash"),
+        "research_hash": race.get("research_hash"),
+        "strategy_hash": race.get("strategy_hash"),
+        "evaluation_hash": evaluation_hash,
+        "external_task_ref": _short_text(
+            external_task_ref, "external_task_ref", required=True, limit=300
+        ),
+        "human_selection": human,
+        "attested_at": _timestamp(),
+        "control_token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+    }
+    attestation_hash = _sha256(body)
+    signature = hmac.new(
+        token.encode("utf-8"), attestation_hash.encode("ascii"), hashlib.sha256
+    ).hexdigest()
+    artifact = {
+        **body,
+        "attestation_hash": attestation_hash,
+        "controller_signature": signature,
+    }
+    return validate_race_selection_attestation(artifact, ledger, plan, token)
+
+
 def validate_stage_artifacts(
     ledger: Mapping[str, Any],
     plan: Mapping[str, Any],
     stage: str,
     artifacts: Mapping[str, Any],
+    control_token: str = "",
 ) -> List[str]:
     """Validate observed artifacts, never an agent's prose completion claim."""
     errors: List[str] = []
@@ -682,6 +1283,207 @@ def validate_stage_artifacts(
         if capsule.get("repository_root") != capsule.get("diff_root"):
             errors.append("the real diff root differs from the assigned repository root")
 
+    elif stage == "parallel_technology_race":
+        race = plan.get("technology_race") or {}
+        if not race.get("enabled"):
+            return ["technology race stage is not enabled"]
+        reports = artifacts.get("race_reports")
+        if not isinstance(reports, list):
+            return ["race_reports are required"]
+        selected = list(race.get("selected_path_ids") or [])
+        if len(reports) != len(selected) or len(reports) not in {2, 3}:
+            errors.append("race must submit exactly the selected two or three paths")
+        by_path = {
+            str(item.get("path_id")): item
+            for item in reports
+            if isinstance(item, Mapping)
+        }
+        if set(by_path) != set(selected):
+            errors.append("race reports do not match the human-selected path ids")
+        contexts = []
+        worktrees = []
+        frozen_data_hashes = set()
+        for path_id in selected:
+            report = by_path.get(path_id)
+            if not isinstance(report, Mapping):
+                continue
+            context_id = str(report.get("context_id") or "").strip()
+            worktree = str(report.get("worktree") or "").strip()
+            if not context_id or not worktree:
+                errors.append("race path lacks a context or worktree: %s" % path_id)
+            contexts.append(context_id)
+            worktrees.append(worktree)
+            if report.get("contract_hash") != contract_hash:
+                errors.append("race path used a different contract: %s" % path_id)
+            if report.get("research_hash") != race.get("research_hash"):
+                errors.append("race path used different research: %s" % path_id)
+            if report.get("strategy_hash") != race.get("strategy_hash"):
+                errors.append("race path used a different strategy: %s" % path_id)
+            if report.get("common_test_suite_hash") != race.get(
+                "common_test_suite_hash"
+            ):
+                errors.append("race path used different tests: %s" % path_id)
+            if report.get("evaluation_dimensions_hash") != race.get(
+                "evaluation_dimensions_hash"
+            ):
+                errors.append("race path used different evaluation dimensions: %s" % path_id)
+            frozen_data = report.get("frozen_data_sha256")
+            if not _is_digest(frozen_data):
+                errors.append("race path lacks frozen data digest: %s" % path_id)
+            else:
+                frozen_data_hashes.add(str(frozen_data))
+            if not _is_digest(report.get("diff_sha256")):
+                errors.append("race path lacks a diff digest: %s" % path_id)
+            if not _is_digest(report.get("common_test_results_sha256")):
+                errors.append("race path lacks common test result evidence: %s" % path_id)
+            if report.get("peer_candidate_visible") is not False or report.get(
+                "transcript_shared"
+            ) is not False:
+                errors.append("race candidates were not mutually blind: %s" % path_id)
+            if report.get("external_actions_performed"):
+                errors.append("race path performed an external action: %s" % path_id)
+            if report.get("within_budget") is not True:
+                errors.append("race path exceeded or failed to prove its budget: %s" % path_id)
+        if len(set(contexts)) != len(contexts) or len(set(worktrees)) != len(worktrees):
+            errors.append("race paths must use unique contexts and isolated worktrees")
+        if len(frozen_data_hashes) > 1:
+            errors.append("race paths used different frozen data")
+
+    elif stage == "race_evaluation":
+        race = plan.get("technology_race") or {}
+        if not race.get("enabled"):
+            return ["technology race evaluation is not enabled"]
+        evaluation = artifacts.get("race_evaluation")
+        if not isinstance(evaluation, Mapping):
+            return ["race_evaluation is required"]
+        body = {
+            key: copy.deepcopy(value)
+            for key, value in evaluation.items()
+            if key != "evaluation_hash"
+        }
+        if evaluation.get("evaluation_hash") != _sha256(body):
+            errors.append("race evaluation hash is invalid")
+        for field, expected in (
+            ("contract_hash", contract_hash),
+            ("plan_hash", plan_hash),
+            ("research_hash", race.get("research_hash")),
+            ("strategy_hash", race.get("strategy_hash")),
+            ("common_test_suite_hash", race.get("common_test_suite_hash")),
+            (
+                "evaluation_dimensions_hash",
+                race.get("evaluation_dimensions_hash"),
+            ),
+        ):
+            if evaluation.get(field) != expected:
+                errors.append("race evaluation used a different %s" % field)
+        declaration = evaluation.get("evaluator_declaration") or {}
+        if not isinstance(declaration, Mapping):
+            errors.append("race evaluator declaration is required")
+            declaration = {}
+        if declaration.get("fresh_context") is not True or declaration.get(
+            "read_only"
+        ) is not True:
+            errors.append("race evaluator is not fresh and read-only")
+        if declaration.get("candidate_transcripts_visible") is not False:
+            errors.append("race evaluator saw candidate transcripts")
+        if declaration.get("peer_findings_visible") is not False:
+            errors.append("race evaluator saw peer conclusions")
+        candidate_contexts = {
+            str(item.get("context_id") or "") for item in _race_reports_from_ledger(ledger)
+        }
+        if not str(declaration.get("context_id") or "").strip() or str(
+            declaration.get("context_id") or ""
+        ) in candidate_contexts:
+            errors.append("race evaluator did not use an independent context")
+        results = evaluation.get("candidate_results")
+        if not isinstance(results, list):
+            errors.append("race candidate_results are required")
+            results = []
+        result_by_path = {
+            str(item.get("path_id")): item
+            for item in results
+            if isinstance(item, Mapping)
+        }
+        selected = list(race.get("selected_path_ids") or [])
+        if set(result_by_path) != set(selected) or len(results) != len(selected):
+            errors.append("race evaluator did not score every selected path exactly once")
+        report_by_path = {
+            str(item.get("path_id")): item for item in _race_reports_from_ledger(ledger)
+        }
+        dimensions = list((plan.get("technology_strategy") or {}).get(
+            "evaluation_dimensions"
+        ) or [])
+        qualified = set()
+        for path_id in selected:
+            result = result_by_path.get(path_id)
+            if not isinstance(result, Mapping):
+                continue
+            report = report_by_path.get(path_id) or {}
+            if result.get("candidate_artifact_sha256") != _sha256(report):
+                errors.append("race evaluator scored a different candidate artifact: %s" % path_id)
+            if result.get("common_test_suite_hash") != race.get(
+                "common_test_suite_hash"
+            ):
+                errors.append("race evaluator used different tests for path: %s" % path_id)
+            if str(result.get("test_status") or "").lower() not in {
+                "pass",
+                "passed",
+                "fail",
+                "failed",
+            }:
+                errors.append("race path test status is invalid: %s" % path_id)
+            scores = result.get("dimension_scores") or {}
+            if not isinstance(scores, Mapping) or set(scores) != set(dimensions):
+                errors.append("race path lacks the frozen evaluation dimensions: %s" % path_id)
+            else:
+                for score in scores.values():
+                    if not isinstance(score, (int, float)) or score < 0 or score > 5:
+                        errors.append("race dimension scores must be between 0 and 5: %s" % path_id)
+                        break
+            status = str(result.get("status") or "").lower()
+            if status not in {"qualified", "disqualified"}:
+                errors.append("race candidate status is invalid: %s" % path_id)
+            elif status == "qualified":
+                if str(result.get("test_status") or "").lower() not in PASS_STATUSES:
+                    errors.append("a race path cannot qualify with failing common tests: %s" % path_id)
+                qualified.add(path_id)
+            if not str(result.get("evidence") or "").strip():
+                errors.append("race candidate lacks evaluation evidence: %s" % path_id)
+        recommendation = evaluation.get("recommendation") or {}
+        if not isinstance(recommendation, Mapping):
+            errors.append("race recommendation is required")
+            recommendation = {}
+        decision = recommendation.get("decision")
+        recommended = list(recommendation.get("selected_path_ids") or [])
+        if decision == "keep_path":
+            if len(recommended) != 1 or not set(recommended) <= qualified:
+                errors.append("keep_path must recommend exactly one qualified path")
+        elif decision == "fuse_paths":
+            if not race.get("fusion_allowed"):
+                errors.append("race evaluator recommended unauthorized fusion")
+            if len(recommended) not in {2, 3} or not set(recommended) <= qualified:
+                errors.append("fusion must name two or three qualified paths")
+            if not list(recommendation.get("explicit_benefits") or []):
+                errors.append("fusion recommendation lacks explicit benefits")
+        elif decision == "reject_all":
+            if recommended:
+                errors.append("reject_all must not recommend a path")
+        else:
+            errors.append("race recommendation must keep, fuse, or reject all")
+        if not str(recommendation.get("rationale") or "").strip():
+            errors.append("race recommendation lacks rationale")
+
+    elif stage == "race_human_selection":
+        attestation = artifacts.get("race_selection_attestation")
+        if not isinstance(attestation, Mapping):
+            return ["race_selection_attestation is required"]
+        if not control_token:
+            return ["controller token is required to validate race selection"]
+        try:
+            validate_race_selection_attestation(attestation, ledger, plan, control_token)
+        except ValueError as exc:
+            errors.append(str(exc))
+
     elif stage == "owner_implementation":
         report = artifacts.get("owner_report")
         if not isinstance(report, Mapping):
@@ -692,6 +1494,16 @@ def validate_stage_artifacts(
             errors.append("diff_sha256 must be a sha256 digest")
         if report.get("external_actions_performed"):
             errors.append("owner performed an external action")
+        race = plan.get("technology_race") or {}
+        if race.get("enabled"):
+            selection = _prior_artifacts(ledger, "race_human_selection").get(
+                "race_selection_attestation"
+            ) or {}
+            human = selection.get("human_selection") or {}
+            if human.get("decision") == "reject_all":
+                errors.append("owner cannot start after the human rejected all race paths")
+            elif report.get("owner_context_id") != human.get("owner_context_id"):
+                errors.append("owner did not continue the human-selected race context")
 
     elif stage in {"deterministic_ci", "full_reverification"}:
         results = artifacts.get("deterministic_results")
@@ -837,7 +1649,9 @@ def advance_run_ledger(
         raise ValueError("stage transition is out of order; next stage is %s" % (pending[0] if pending else "none"))
     if not isinstance(artifacts, Mapping):
         raise ValueError("artifacts must be an object")
-    errors = validate_stage_artifacts(ledger, plan, stage, artifacts)
+    errors = validate_stage_artifacts(
+        ledger, plan, stage, artifacts, control_token=token
+    )
     if errors:
         raise ValueError("artifact invariants failed: %s" % "; ".join(errors))
 
@@ -856,6 +1670,20 @@ def advance_run_ledger(
     decision = ((artifacts.get("adjudication") or {}).get("decision") if stage == "adjudication" else "")
     if decision in {"human_decision", "needs_clarification"}:
         updated["status"] = "needs_human_decision"
+    race_decision = (
+        (
+            artifacts.get("race_selection_attestation") or {}
+        ).get("human_selection", {}).get("decision")
+        if stage == "race_human_selection"
+        else ""
+    )
+    if race_decision == "reject_all":
+        updated["status"] = "needs_human_decision"
+        updated["stop"] = {
+            "reason": "all_technology_paths_rejected",
+            "detail": "The human rejected every race candidate; owner implementation is forbidden.",
+            "at": _timestamp(),
+        }
     elif stage == "human_handoff":
         updated["status"] = "awaiting_human_decision"
     updated["updated_at"] = _timestamp()
@@ -867,7 +1695,12 @@ def advance_run_ledger(
             updated["status"],
             updated["stages"][stage]["artifact_sha256"],
             token,
-            {"telemetry_sha256": _sha256(stage_telemetry)},
+            {
+                "telemetry_sha256": _sha256(stage_telemetry),
+                "stop_sha256": _sha256(updated.get("stop") or {})
+                if updated.get("stop")
+                else "",
+            },
         )
     )
     return updated
@@ -939,17 +1772,44 @@ def replay_run_ledger(
             plan,
             token,
         )
+    intent = ledger.get("intent_attestation") or {}
+    plan_alignment = plan.get("intent_alignment") or {}
+    if plan_alignment.get("required") and not intent:
+        raise ValueError("ledger is missing the required intent alignment attestation")
+    if intent:
+        validate_intent_alignment_attestation(
+            intent,
+            {
+                "contract_hash": ledger.get("contract_hash"),
+                "intent_alignment": {
+                    "intent_hash": plan_alignment.get("intent_hash"),
+                    "inspection_hash": plan_alignment.get("inspection_hash"),
+                    "research_hash": plan_alignment.get("research_hash"),
+                    "technology_strategy_hash": plan_alignment.get(
+                        "technology_strategy_hash"
+                    ),
+                },
+            },
+            plan,
+            token,
+        )
     creation_events = [
         event for event in verified_events if event.get("type") == "ledger_created"
     ]
     if len(creation_events) != 1 or creation_events[0].get("sequence") != 1:
         raise ValueError("ledger creation is not bound to exactly one signed event")
-    if creation_events[0].get("artifact_sha256") != _sha256(resolution):
-        raise ValueError("ledger resolution differs from its signed creation event")
+    if creation_events[0].get("artifact_sha256") != _sha256(
+        {"resolution": resolution, "intent": intent}
+    ):
+        raise ValueError("ledger attestations differ from their signed creation event")
     if (creation_events[0].get("details") or {}).get(
         "resolution_attestation_hash"
     ) != resolution.get("attestation_hash", ""):
         raise ValueError("ledger resolution hash differs from its signed creation event")
+    if (creation_events[0].get("details") or {}).get(
+        "intent_attestation_hash"
+    ) != intent.get("attestation_hash", ""):
+        raise ValueError("ledger intent hash differs from its signed creation event")
 
     reconstructed_agents: Dict[str, Dict[str, Any]] = {}
     for event in verified_events:
@@ -994,7 +1854,32 @@ def replay_run_ledger(
             expected_telemetry = _sha256(record.get("telemetry") or {})
             if (stage_events[0].get("details") or {}).get("telemetry_sha256") != expected_telemetry:
                 raise ValueError("stage telemetry differs from its signed event: %s" % stage)
-            errors = validate_stage_artifacts(ledger, plan, stage, record.get("artifacts") or {})
+            selection_decision = (
+                (
+                    (record.get("artifacts") or {}).get(
+                        "race_selection_attestation"
+                    )
+                    or {}
+                ).get("human_selection", {})
+                or {}
+            ).get("decision")
+            expected_stop = (
+                _sha256(ledger.get("stop") or {})
+                if stage == "race_human_selection"
+                and selection_decision == "reject_all"
+                else ""
+            )
+            if (stage_events[0].get("details") or {}).get(
+                "stop_sha256", ""
+            ) != expected_stop:
+                raise ValueError("ledger stop differs from its signed event: %s" % stage)
+            errors = validate_stage_artifacts(
+                ledger,
+                plan,
+                stage,
+                record.get("artifacts") or {},
+                control_token=token,
+            )
             if errors:
                 raise ValueError("stored stage artifact invariants failed: %s" % "; ".join(errors))
             completed.append(stage)

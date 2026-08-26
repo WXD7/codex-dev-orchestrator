@@ -1,0 +1,28 @@
+id: "ai-delivery-agent-observer"
+api_version: 1
+version: "0.3.1"
+display_name: "智能体监控"
+description: "通过 Codex 实时 Hooks、持久化历史和 Kandev 原生事件展示子 Agent、父子 DAG、纠偏、时间轴与通道健康。"
+author: "AI Delivery Governance"
+categories: ["tools"]
+min_kandev_version: "0.91.0"
+
+runtime:
+  type: binary
+  executables:
+    darwin-arm64: "server/plugin-darwin-arm64"
+
+capabilities:
+  api_read: ["tasks", "sessions", "messages", "workspaces"]
+  events: ["agent.stream", "agent.stream.*"]
+  state: true
+
+webhooks:
+  - key: "snapshot"
+    description: "读取当前用户可见范围内的智能体运行快照"
+    method: "GET"
+    access: "authenticated"
+
+ui:
+  bundle: "/ui/bundle.js"
+  styles: ["/ui/plugin.css"]
