@@ -53,9 +53,9 @@ flowchart LR
 
 当前页面截图：
 
-![Kandev 0.4.3 当前状态](/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator-ai-native/evidence/overnight-acceptance-2026-08-26/kandev-monitor-0.4.3.png)
+![Kandev 0.4.3 当前状态](./kandev-monitor-0.4.3.png)
 
-![Kandev 真实 Hook 生命周期](/Users/wangxian/Documents/ChatGPT/AI学习/codex-dev-orchestrator-ai-native/evidence/overnight-acceptance-2026-08-26/kandev-observer-real-hook.png)
+![Kandev 真实 Hook 生命周期](./kandev-observer-real-hook.png)
 
 ## 3. 法律计费 Demo V2.3.3 成果
 
