@@ -56,6 +56,8 @@ Kandev MCP 中的任务创建、分支和交接仍由 Kandev 自己执行，本�
 
 构建与安装命令、插件能力声明和兼容边界见插件 README。安装后从 Kandev 侧边栏进入 `智能体监控`，或打开 `/ai-delivery-observer`。Kandev 0.91.0 尚未提供任务列表行摘要插槽，因此本实现没有通过 DOM 注入或私有 Store 强行扩展该页面。
 
+Codex 实时事件推荐由 [`plugins/codex-agent-observer-bridge`](../plugins/codex-agent-observer-bridge/README.md) 伴生插件接入。项目 `.codex/hooks.json` 只在当前仓库配置层有效，任务 cwd 位于上级目录或其他仓库时不会向下搜索。伴生插件通过 `$PLUGIN_ROOT` 解决发现和路径可移植性，但不能越过信任：人在 `/hooks` 看到 `Installed 1 / Active 0 / Review 1` 后仍需审阅，只有 `Active 1` 且全新任务产生了 Start/协作/Stop 原始事件，才可把 Kandev 页面标记为真实验收成功。
+
 实际安装和 Profile/MCP 配置见 `governance init` 生成的 `.ai-delivery/KANDEV_RUNBOOK.md`。这里有三个不能静默越过的上游边界：
 
 - Kandev 的 Codex 模型、模式和配置来自当前已安装 Agent 的能力探测，便携工作流不能猜一个固定的只读 mode；

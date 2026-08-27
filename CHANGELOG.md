@@ -2,6 +2,17 @@
 
 本项目采用语义化包版本；产品代号用于表达治理架构代际。`0.2.3` 对应 AI Delivery Governance V2.3。
 
+## [Kandev 智能体监控 0.4.3] - 2026-08-26（Codex 跨项目实时监控修复）
+
+- 新增 `plugins/codex-agent-observer-bridge` 伴生插件，通过插件自带 `hooks/hooks.json` 让任意项目都能发现 Codex `SubagentStart`、`SubagentStop` 和协作工具事件，不再依赖任务 cwd 恰好位于治理仓库。
+- dispatcher 只选择 Kandev 激活清单明确指向、协议匹配且 SHA-256 校验通过的接收器；子进程使用最小环境，不继承 DeepSeek Key 或其他凭据，失败时不向模型注入接收器输出。
+- Hook 快照协议升级到 v2：新增多根任务隔离、SessionEnd 清场、权限等待、嵌套父子关系、活动类别和中文固定进展；Kandev 页面按根任务分组并显示投递失败原因。
+- 全局伴生插件支持本机 `codex-hook-binding.json` 显式绑定 Kandev 工作区，避免“插件已加载但因没有作用域而不投递”的隐性失败。
+- 保留 Codex `/hooks` 的逐哈希人工信任边界；新增 `0/0`、`1/0/Review 1`、`Active 1` 三态诊断和新任务真实生命周期验收说明。
+- 新增伴生插件回归测试并通过官方插件清单校验；真实端到端 Hook 验收必须在用户安装、启用、信任插件后由全新任务完成。
+- Kandev 观察插件升级到 `0.4.3`：上下文压缩不再误停子 Agent，迟到事件不再覆写其他活跃任务，首次投递失败不再被缺失快照吞掉，非 active 通道也无法暴露假工作状态；并行 spawn 必须等到精确 child ID 才绑定，即使只剩一个待匹配请求也不再猜测角色与父节点。
+- 用户信任全部七类 Hook 后，新的无网络、无密钥、无产品写入子 Agent 探针已自动产生并进入 Kandev 的 `SessionStart → SubagentStart → 工具活动 → SubagentStop` 事件链，来源明确为 `codex_hooks_realtime`；端到端最后一跳由“待信任”更新为“真实生命周期已验证”。
+
 ## [0.2.3] - 2026-08-25（V2.3 技术调研与有界赛马）
 
 ### 开发前技术调研门禁

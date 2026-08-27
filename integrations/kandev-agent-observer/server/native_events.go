@@ -40,6 +40,7 @@ type eventStore struct {
 type nativeAgentSnapshot struct {
 	AgentID           string `json:"agent_id"`
 	ParentAgentID     string `json:"parent_agent_id,omitempty"`
+	RootThreadID      string `json:"root_thread_id,omitempty"`
 	DisplayName       string `json:"display_name"`
 	RoleCN            string `json:"role_cn"`
 	Mission           string `json:"mission"`
@@ -69,6 +70,7 @@ type collaborationEdgeSnapshot struct {
 	Source        string   `json:"source"`
 	WorkspaceID   string   `json:"workspace_id,omitempty"`
 	TaskID        string   `json:"task_id,omitempty"`
+	RootThreadID  string   `json:"root_thread_id,omitempty"`
 }
 
 type timelineEventSnapshot struct {
@@ -83,6 +85,8 @@ type timelineEventSnapshot struct {
 	Source         string   `json:"source"`
 	WorkspaceID    string   `json:"workspace_id,omitempty"`
 	TaskID         string   `json:"task_id,omitempty"`
+	RootThreadID   string   `json:"root_thread_id,omitempty"`
+	ActivityKind   string   `json:"activity_kind,omitempty"`
 	RepeatCount    int      `json:"repeat_count,omitempty"`
 }
 
@@ -94,6 +98,8 @@ type bridgeHealthSnapshot struct {
 	LastSuccessAt   string `json:"last_success_at,omitempty"`
 	GeneratedAt     string `json:"generated_at,omitempty"`
 	Error           string `json:"error,omitempty"`
+	ActiveRuns      int    `json:"active_runs,omitempty"`
+	RunCount        int    `json:"run_count,omitempty"`
 }
 
 type storedNativeState struct {
@@ -208,6 +214,7 @@ func projectKandevNativeEvent(event *pluginsdk.Event) (projectedNativeEvent, boo
 	agent := nativeAgentSnapshot{
 		AgentID:           cleanChildID,
 		ParentAgentID:     cleanParentID,
+		RootThreadID:      sessionID,
 		DisplayName:       role.Name,
 		RoleCN:            role.Name,
 		Mission:           role.Mission,
@@ -232,7 +239,7 @@ func projectKandevNativeEvent(event *pluginsdk.Event) (projectedNativeEvent, boo
 			EdgeID: eventID + ":spawn", EdgeType: "spawn", Action: "spawnAgent",
 			FromAgentID: agent.ParentAgentID, ToAgentIDs: []string{agent.AgentID}, Status: observedLifecycleStatus(status),
 			ObservedAt: observedAt, Summary: "Kandev 创建子 Agent", SourceQuality: agent.SourceQuality,
-			Source: agent.Source, WorkspaceID: agent.WorkspaceID, TaskID: agent.TaskID,
+			Source: agent.Source, WorkspaceID: agent.WorkspaceID, TaskID: agent.TaskID, RootThreadID: agent.RootThreadID,
 		}
 	} else if state == "finished" || state == "failed" || state == "interrupted" {
 		eventType = state
@@ -245,7 +252,7 @@ func projectKandevNativeEvent(event *pluginsdk.Event) (projectedNativeEvent, boo
 			EventID: eventID, EventType: eventType, ActorAgentID: agent.ParentAgentID,
 			TargetAgentIDs: []string{agent.AgentID}, Status: observedLifecycleStatus(status), ObservedAt: observedAt,
 			Summary: summary, SourceQuality: agent.SourceQuality, Source: agent.Source,
-			WorkspaceID: agent.WorkspaceID, TaskID: agent.TaskID,
+			WorkspaceID: agent.WorkspaceID, TaskID: agent.TaskID, RootThreadID: agent.RootThreadID,
 		},
 	}, true
 }
@@ -274,6 +281,7 @@ type codexSnapshotFile struct {
 	Agents            []codexAgentFile            `json:"agents"`
 	Edges             []collaborationEdgeSnapshot `json:"edges"`
 	Timeline          []timelineEventSnapshot     `json:"timeline"`
+	Runs              []codexRunFile              `json:"runs"`
 }
 
 type codexBridgeFile struct {
@@ -282,11 +290,22 @@ type codexBridgeFile struct {
 	RootThreadID  string `json:"root_thread_id"`
 	LastSuccessAt string `json:"last_success_at"`
 	Error         string `json:"error"`
+	ActiveRuns    int    `json:"active_runs"`
+	RunCount      int    `json:"run_count"`
+}
+
+type codexRunFile struct {
+	RootThreadID   string `json:"root_thread_id"`
+	ExecutionState string `json:"execution_state"`
+	StartedAt      string `json:"started_at"`
+	UpdatedAt      string `json:"updated_at"`
+	EndedAt        string `json:"ended_at"`
 }
 
 type codexAgentFile struct {
 	AgentID           string `json:"agent_id"`
 	ParentAgentID     string `json:"parent_agent_id"`
+	RootThreadID      string `json:"root_thread_id"`
 	DisplayName       string `json:"display_name"`
 	RoleCN            string `json:"role_cn"`
 	ExecutionState    string `json:"execution_state"`
@@ -356,7 +375,8 @@ func readCodexAppSnapshot(path, workspaceID string, taskScoped bool) ([]nativeAg
 		State: "history_synced", Source: "codex_app_server_history",
 		ProtocolVersion: sanitizeObserved(value.ProtocolVersion, 80), RootThreadID: observedID(value.Bridge.RootThreadID, 100),
 		LastSuccessAt: sanitizeObserved(value.Bridge.LastSuccessAt, 60), GeneratedAt: sanitizeObserved(value.GeneratedAt, 60),
-		Error: sanitizeObserved(value.Bridge.Error, 180),
+		Error: sanitizeObserved(value.Bridge.Error, 180), ActiveRuns: boundedCount(value.Bridge.ActiveRuns, maxNativeAgents),
+		RunCount: boundedCount(value.Bridge.RunCount, maxNativeAgents),
 	}
 	if value.Bridge.State != "history_synced" {
 		health.State = "stale"
@@ -373,7 +393,8 @@ func readCodexAppSnapshot(path, workspaceID string, taskScoped bool) ([]nativeAg
 		progress, difficulty := nativeNarrative("Codex 历史", "historical")
 		agents = append(agents, nativeAgentSnapshot{
 			AgentID: observedID(raw.AgentID, 100), ParentAgentID: observedID(raw.ParentAgentID, 100),
-			DisplayName: sanitizeObserved(firstNonEmpty(raw.DisplayName, role), 32), RoleCN: role,
+			RootThreadID: firstNonEmpty(observedID(raw.RootThreadID, 100), observedID(value.Bridge.RootThreadID, 100)),
+			DisplayName:  sanitizeObserved(firstNonEmpty(raw.DisplayName, role), 32), RoleCN: role,
 			Mission: missionForRole(role), ExecutionState: "historical",
 			ProgressSummary: progress, CurrentDifficulty: difficulty,
 			CreatedAt: observedTimestamp(raw.CreatedAt), UpdatedAt: observedTimestamp(raw.UpdatedAt),
@@ -382,6 +403,11 @@ func readCodexAppSnapshot(path, workspaceID string, taskScoped bool) ([]nativeAg
 	}
 	disambiguateNativeNames(agents)
 	edges := sanitizeCodexEdges(value.Edges, "codex_app_server_history", "codex_app_server_history")
+	for index := range edges {
+		if edges[index].RootThreadID == "" {
+			edges[index].RootThreadID = observedID(value.Bridge.RootThreadID, 100)
+		}
+	}
 	knownSpawn := make(map[string]bool)
 	for _, edge := range edges {
 		if edge.EdgeType == "spawn" {
@@ -398,10 +424,15 @@ func readCodexAppSnapshot(path, workspaceID string, taskScoped bool) ([]nativeAg
 			EdgeID: "parent:" + agent.AgentID, EdgeType: "spawn", Action: "parentThreadId",
 			FromAgentID: agent.ParentAgentID, ToAgentIDs: []string{agent.AgentID}, Status: agent.ExecutionState,
 			ObservedAt: agent.CreatedAt, Summary: "Codex 记录的父子 Agent 关系",
-			SourceQuality: "codex_app_server_history", Source: "codex_app_server_history",
+			SourceQuality: "codex_app_server_history", Source: "codex_app_server_history", RootThreadID: agent.RootThreadID,
 		})
 	}
 	timeline := sanitizeCodexTimeline(value.Timeline, "codex_app_server_history", "codex_app_server_history")
+	for index := range timeline {
+		if timeline[index].RootThreadID == "" {
+			timeline[index].RootThreadID = observedID(value.Bridge.RootThreadID, 100)
+		}
+	}
 	return agents, edges, timeline, health
 }
 
@@ -418,6 +449,7 @@ func sanitizeEdges(values []collaborationEdgeSnapshot, source string) []collabor
 		value.Summary = sanitizeObserved(value.Summary, 180)
 		value.SourceQuality = "codex_app_server_exact"
 		value.Source = source
+		value.RootThreadID = observedID(value.RootThreadID, 100)
 		result = append(result, value)
 	}
 	return keepLast(result, maxNativeEdges)
@@ -435,6 +467,8 @@ func sanitizeTimeline(values []timelineEventSnapshot, source string) []timelineE
 		value.Summary = sanitizeObserved(value.Summary, 180)
 		value.SourceQuality = "codex_app_server_exact"
 		value.Source = source
+		value.RootThreadID = observedID(value.RootThreadID, 100)
+		value.ActivityKind = observedActivityKind(value.ActivityKind)
 		result = append(result, value)
 	}
 	return keepLast(result, maxNativeTimeline)
@@ -510,11 +544,32 @@ func disambiguateNativeNames(values []nativeAgentSnapshot) {
 	counts := make(map[string]int)
 	for index := range values {
 		base := firstNonEmpty(values[index].RoleCN, values[index].DisplayName, "执行智能体")
-		counts[base]++
+		key := values[index].RootThreadID + "|" + base
+		counts[key]++
 		values[index].DisplayName = base
-		if counts[base] > 1 {
-			values[index].DisplayName = fmt.Sprintf("%s %d", base, counts[base])
+		if counts[key] > 1 {
+			values[index].DisplayName = fmt.Sprintf("%s %d", base, counts[key])
 		}
+	}
+}
+
+func boundedCount(value, maximum int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
+func observedActivityKind(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "command", "file_change", "plan", "evidence", "human_input", "integration", "tool":
+		return normalized
+	default:
+		return ""
 	}
 }
 
@@ -556,6 +611,8 @@ func nativeNarrative(source, state string) (string, string) {
 		return source + " 已确认该 Agent 被中断", "中断原因需在原会话核验"
 	case "waiting_on_dependency":
 		return source + " 已确认该 Agent 正在等待", "等待上级或依赖"
+	case "waiting_on_human":
+		return source + " 已确认该 Agent 正在等待人类处理", "继续执行需要人类确认"
 	case "historical":
 		return source + "仅用于补全持久化任务树", "历史通道不判断当前困难"
 	default:

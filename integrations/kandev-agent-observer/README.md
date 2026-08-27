@@ -1,6 +1,6 @@
 # Kandev 智能体监控插件
 
-0.3.1 将 Codex 监控改为“实时 Hook 为权威状态、app-server 只补全持久化历史”，并修正停止、纠偏目标和重复等待的展示语义。
+0.4.3 将 Codex 监控改为“实时 Hook 为权威状态、app-server 只补全持久化历史”，并补齐工作区强绑定、活动版本与协议校验、分发健康、会话隔离和活跃任务陈旧判定；同时修复上下文压缩误停、跨任务迟到事件覆写、首次投递失败被吞、空闲通道暴露工作中 Agent，以及并行创建时角色和父节点被猜错。
 
 ## 真实数据通道
 
@@ -41,7 +41,7 @@ make package \
 
 打包流程运行 Go 单元测试，编译 macOS arm64 插件，包含只读桥接脚本，并生成完整校验清单：
 
-`dist/ai-delivery-agent-observer-0.3.1-darwin-arm64.tar.gz`
+`dist/ai-delivery-agent-observer-0.4.3-darwin-arm64.tar.gz`
 
 桥接器测试：
 
@@ -54,7 +54,9 @@ python3 -m unittest \
 
 ## 启用 Codex 实时 Hook
 
-仓库已提供 `.codex/hooks.json`，绑定当前 Kandev 工作区并调用 `bridge/codex_hook_receiver.py`。Codex 会在新任务启动时加载项目 Hook；首次或配置变更后必须通过 `/hooks` 审阅并信任精确命令。未审阅的 Hook 会被 Codex 跳过，这是预期的安全边界。
+推荐安装仓库内的 [`plugins/codex-agent-observer-bridge`](../../plugins/codex-agent-observer-bridge/README.md) Codex 伴生插件。它用插件自带 `hooks/hooks.json` 跨项目调用 Kandev 当前激活且校验通过的本机 `bridge/codex_hook_receiver.py`，避免任务从上级目录或其他仓库启动时无法发现项目 Hook。
+
+仓库的 `.codex/hooks.json` 只覆盖当前仓库配置层，可用于单仓库定制和降级诊断。Codex 会在新任务启动时加载 Hook；伴生插件和项目 Hook 首次出现或配置变更后都必须通过 `/hooks` 审阅并信任精确哈希。未审阅的 Hook 会被跳过，这是预期的安全边界。诊断含义：`Installed 0 / Active 0` 是未发现；`Installed 1 / Active 0 / Review 1` 是已发现但待信任；`Active 1` 才表示事件源可运行。
 
 默认实时快照位置：
 
@@ -80,11 +82,13 @@ python3 bridge/codex_app_server_bridge.py \
 
 ## 安装
 
-把 0.3.1 包提交给 Kandev 原生插件安装接口，刷新页面后在 `Settings → Plugins → 智能体监控` 中确认启用。Kandev 原生事件由插件直接接入；Codex 实时事件需要新任务加载并信任项目 Hook；历史补全需要保持历史同步器运行。
+把 0.4.3 包提交给 Kandev 原生插件安装接口，刷新页面后在 `Settings → Plugins → 智能体监控` 中确认启用。Kandev 原生事件由插件直接接入；Codex 实时事件推荐安装伴生插件、显式绑定工作区、在 `/hooks` 信任后用新任务加载；历史补全需要保持历史同步器运行。
 
 ## 已知边界
 
 - Hook 配置通常从新任务开始生效；当前已经运行的任务不能作为首次启用后的完整生命周期验收样本。
+- Hook 是事件驱动通道，不是长连接；`idle` 表示已收到过有效事件但目前没有活跃 Codex 任务，不能因为超过 30 秒没有事件就判定断线。仍标记活跃的任务连续 15 分钟无事件才保守标为陈旧。
+- 伴生插件没有安装、启用并经 `/hooks` 信任前，页面只能显示 Kandev 原生事件或 Codex 历史，不能宣称“Codex 实时”已经验收。
 - Codex Hook 的 `SubagentStart/Stop` 不提供任意进展正文或困难详情，因此页面只展示可证明的生命周期状态和预定义说明，不会从 transcript 猜测。
 - 新 Agent 的中文角色优先来自安全的 `task_name/agent_type` slug；无法识别时显示“执行智能体”。
 - 持久化历史不能证明当前运行状态，因此始终显示“历史记录”，即使独立 app-server 返回 active、idle、interrupted 等值。

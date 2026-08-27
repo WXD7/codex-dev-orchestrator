@@ -246,7 +246,7 @@ class AppServerClient:
                 "clientInfo": {
                     "name": "kandev_agent_observer",
                     "title": "Kandev Agent Observer",
-                    "version": "0.3.1",
+                    "version": "0.4.2",
                 },
                 "capabilities": {"experimentalApi": True},
             },

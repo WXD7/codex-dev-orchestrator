@@ -1,7 +1,7 @@
 GO_BIN ?= go
 KANDEV_BACKEND ?=
-OUTPUT ?= dist/ai-delivery-agent-observer-0.3.1-darwin-arm64.tar.gz
-BASE_PACKAGE ?= dist/ai-delivery-agent-observer-0.3.0-darwin-arm64.tar.gz
+OUTPUT ?= dist/ai-delivery-agent-observer-0.4.3-darwin-arm64.tar.gz
+BASE_PACKAGE ?= dist/ai-delivery-agent-observer-0.4.1-darwin-arm64.tar.gz
 
 .PHONY: test package package-ui-hotfix
 

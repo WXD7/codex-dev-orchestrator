@@ -1,0 +1,92 @@
+{
+  "description": "跨项目同步 Codex 子 Agent 生命周期到本机 Kandev 智能体监控；不保存 Prompt、消息正文、工具输入或工具输出。",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$PLUGIN_ROOT/scripts/dispatch.py\"",
+            "timeout": 3,
+            "statusMessage": "连接智能体监控"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$PLUGIN_ROOT/scripts/dispatch.py\"",
+            "timeout": 3,
+            "statusMessage": "关闭智能体监控会话"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$PLUGIN_ROOT/scripts/dispatch.py\"",
+            "timeout": 3,
+            "statusMessage": "记录子 Agent 启动"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$PLUGIN_ROOT/scripts/dispatch.py\"",
+            "timeout": 3,
+            "statusMessage": "记录子 Agent 停止"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$PLUGIN_ROOT/scripts/dispatch.py\"",
+            "timeout": 3,
+            "statusMessage": "记录 Agent 协作"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$PLUGIN_ROOT/scripts/dispatch.py\"",
+            "timeout": 3,
+            "statusMessage": "确认 Agent 协作结果"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$PLUGIN_ROOT/scripts/dispatch.py\"",
+            "timeout": 3,
+            "statusMessage": "记录 Agent 权限等待"
+          }
+        ]
+      }
+    ]
+  }
+}

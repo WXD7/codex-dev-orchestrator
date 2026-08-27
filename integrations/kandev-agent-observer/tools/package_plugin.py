@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 
 
-PLUGIN_VERSION = "0.3.1"
+PLUGIN_VERSION = "0.4.3"
 PLUGIN_ID = "ai-delivery-agent-observer"
 
 
@@ -146,6 +146,7 @@ def main() -> None:
         shutil.copy2(root / "ui" / "plugin.css", stage / "ui" / "plugin.css")
         shutil.copy2(root / "bridge" / "codex_app_server_bridge.py", stage / "bridge" / "codex_app_server_bridge.py")
         shutil.copy2(root / "bridge" / "codex_hook_receiver.py", stage / "bridge" / "codex_hook_receiver.py")
+        shutil.copy2(root / "bridge" / "codex_hook_protocol.json", stage / "bridge" / "codex_hook_protocol.json")
 
         payload_files = sorted(path for path in stage.rglob("*") if path.is_file())
         checksum_lines = [f"{sha256(path)}  {path.relative_to(stage).as_posix()}" for path in payload_files]

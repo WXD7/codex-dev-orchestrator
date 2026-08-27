@@ -60,6 +60,7 @@ type snapshotSummary struct {
 	InferredTasks       int `json:"inferred_tasks"`
 	Corrections         int `json:"corrections"`
 	TimelineEvents      int `json:"timeline_events"`
+	ActiveCodexRuns     int `json:"active_codex_runs"`
 }
 
 type agentSnapshot struct {
@@ -229,6 +230,7 @@ func collectSnapshot(ctx context.Context, host pluginsdk.Host, workspaceID, task
 		}
 	}
 	summary.TimelineEvents = len(timeline)
+	summary.ActiveCodexRuns = bridge.ActiveRuns
 	return snapshot{
 		GeneratedAt:        time.Now().UTC().Format(time.RFC3339),
 		WorkspaceID:        workspaceID,
@@ -249,7 +251,7 @@ func mergeCollaborationEdges(groups ...[]collaborationEdgeSnapshot) []collaborat
 	indexes := make(map[string]int)
 	for _, group := range groups {
 		for _, edge := range group {
-			key := edge.EdgeType + "|" + edge.FromAgentID + "|" + strings.Join(edge.ToAgentIDs, ",")
+			key := edge.RootThreadID + "|" + edge.EdgeType + "|" + edge.FromAgentID + "|" + strings.Join(edge.ToAgentIDs, ",")
 			if index, found := indexes[key]; found {
 				result[index] = edge
 				continue

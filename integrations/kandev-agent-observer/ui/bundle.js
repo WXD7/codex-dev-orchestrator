@@ -181,7 +181,7 @@
           ) {
             stale += 1;
           }
-          if (agent.needs_human) {
+          if (agent.needs_human || agent.execution_state === "waiting_on_human") {
             needsHuman.push(agent);
           } else if (agent.execution_state === "failed" || agent.execution_state === "interrupted") {
             failed.push(agent);
@@ -232,6 +232,22 @@
         var text = String(value || "");
         if (!text) return "未报告";
         return text.length > 13 ? "…" + text.slice(-12) : text;
+      }
+
+      function rootLabel(value) {
+        return value ? "Codex 任务 " + shortId(value) : "未归属根任务";
+      }
+
+      function groupAgentsByRoot(agents) {
+        var groups = new Map();
+        (agents || []).forEach(function (agent) {
+          var root = agent.root_thread_id || "";
+          if (!groups.has(root)) groups.set(root, []);
+          groups.get(root).push(agent);
+        });
+        return Array.from(groups.entries()).map(function (entry) {
+          return { root: entry[0], agents: entry[1] };
+        });
       }
 
       function StateBadge(props) {
@@ -323,6 +339,9 @@
                   label: agent.agent_id ? "Agent 标识" : "下一步",
                   value: agent.agent_id ? shortId(agent.agent_id) : agent.next_step,
                 }),
+                agent.root_thread_id
+                  ? jsx(DetailRow, { label: "所属 Codex 任务", value: shortId(agent.root_thread_id) })
+                  : null,
                 jsx(DetailRow, {
                   label: agent.delivery_verdict ? "执行 / 交付" : "状态证据",
                   value: agent.delivery_verdict
@@ -406,16 +425,22 @@
       function BridgeBanner(props) {
         var bridge = props.bridge || { state: "unavailable" };
         var labels = {
-          ready: "Codex 实时 Hook 已收到事件",
+          active: "正在接收活跃任务事件",
+          idle: "事件桥已就绪，目前没有活跃任务",
           history_synced: "Codex 持久化历史已同步",
-          connected: "数据通道已连接",
           stale: "数据通道需要检查",
+          delivery_failed: "最近一次 Hook 投递失败",
+          workspace_unbound: "尚未绑定 Kandev 工作区",
           unavailable: "数据通道尚未启用",
           out_of_scope: "数据通道绑定了其他工作区",
           not_applicable: "当前视图不使用此数据通道",
         };
+        var statusLabel = labels[bridge.state] || "数据通道状态未知";
         var detail = bridge.error ||
-          (bridge.last_success_at ? "最近成功：" + relativeTime(bridge.last_success_at) : "等待第一份真实事件快照");
+          (bridge.last_success_at ? "最近事件：" + relativeTime(bridge.last_success_at) : "等待第一份真实事件快照");
+        var runDetail = bridge.source === "codex_hooks"
+          ? " · 活跃 " + String(bridge.active_runs || 0) + " / 已见 " + String(bridge.run_count || 0) + " 个 Codex 任务"
+          : "";
         return jsx(
           "section",
           { className: "ao-bridge ao-bridge-" + String(bridge.state || "unavailable"), role: "status" },
@@ -423,7 +448,8 @@
           jsx(
             "div",
             { className: "ao-bridge-copy" },
-            jsx("strong", null, props.title || labels[bridge.state] || "Codex 数据通道状态未知"),
+            jsx("strong", null, props.title || "Codex 数据通道"),
+            jsx("span", null, statusLabel + runDetail),
             jsx("span", null, detail),
           ),
           bridge.root_thread_id
@@ -433,6 +459,7 @@
       }
 
       function NativeSourceGroup(props) {
+        var grouped = props.groupByRoot ? groupAgentsByRoot(props.agents) : [];
         return jsx(
           "section",
           { className: "ao-native-source" },
@@ -442,12 +469,38 @@
             jsx("div", null, jsx("h2", null, props.title), jsx("p", null, props.description)),
             jsx("span", { className: "ao-group-count" }, String(props.agents.length)),
           ),
-          props.agents.length
+          props.agents.length && props.groupByRoot
+            ? jsx(
+                "div",
+                { className: "ao-run-groups" },
+                grouped.map(function (group) {
+                  var activeCount = deriveView(group.agents).summary.working;
+                  var waitingCount = deriveView(group.agents).summary.waiting_on_human;
+                  return jsx(
+                    "section",
+                    { className: "ao-run-group", key: group.root || "unknown-root" },
+                    jsx(
+                      "div",
+                      { className: "ao-run-heading" },
+                      jsx("strong", null, rootLabel(group.root)),
+                      jsx("span", null, String(group.agents.length) + " Agent · " + String(activeCount) + " 工作 · " + String(waitingCount) + " 等你"),
+                    ),
+                    jsx(
+                      "div",
+                      { className: "ao-agent-grid" },
+                      group.agents.map(function (agent) {
+                        return jsx(AgentCard, { key: (agent.root_thread_id || "") + ":" + agent.agent_id, agent: agent });
+                      }),
+                    ),
+                  );
+                }),
+              )
+            : props.agents.length
             ? jsx(
                 "div",
                 { className: "ao-agent-grid" },
                 props.agents.map(function (agent) {
-                  return jsx(AgentCard, { key: agent.agent_id, agent: agent });
+                  return jsx(AgentCard, { key: (agent.root_thread_id || "") + ":" + agent.agent_id, agent: agent });
                 }),
               )
             : jsx("div", { className: "ao-empty-group" }, props.empty),
@@ -457,11 +510,12 @@
       function DagView(props) {
         var allAgents = (props.kandevAgents || []).concat(props.codexAgents || []).concat(props.historyAgents || []);
         var names = new Map();
-        allAgents.forEach(function (agent) { names.set(agent.agent_id, agent.display_name); });
+        allAgents.forEach(function (agent) { names.set((agent.root_thread_id || "") + ":" + agent.agent_id, agent.display_name); });
         var bridgeRoot = props.bridge && props.bridge.root_thread_id;
-        function agentName(id) {
-          if (names.has(id)) return names.get(id);
-          if (id && id === bridgeRoot) return "当前主任务";
+        function agentName(id, root) {
+          var scoped = (root || "") + ":" + id;
+          if (names.has(scoped)) return names.get(scoped);
+          if (id && (id === root || id === bridgeRoot)) return "当前主任务";
           return id ? "上级 Agent " + shortId(id) : "未知上级";
         }
         var edges = (props.edges || []).filter(function (edge) {
@@ -479,8 +533,9 @@
                 edges.map(function (edge) {
                   return jsx(
                     "div",
-                    { className: "ao-dag-row ao-dag-" + edge.edge_type, key: edge.edge_id },
-                    jsx("span", { className: "ao-dag-node" }, agentName(edge.from_agent_id)),
+                    { className: "ao-dag-row ao-dag-" + edge.edge_type, key: (edge.root_thread_id || "") + ":" + edge.edge_id },
+                    jsx("span", { className: "ao-run-chip" }, rootLabel(edge.root_thread_id)),
+                    jsx("span", { className: "ao-dag-node" }, agentName(edge.from_agent_id, edge.root_thread_id)),
                     jsx(
                       "span",
                       { className: "ao-dag-arrow" },
@@ -491,7 +546,7 @@
                       "span",
                       { className: "ao-dag-targets" },
                       (edge.to_agent_ids || []).map(function (id) {
-                        return jsx("span", { className: "ao-dag-node", key: id }, agentName(id));
+                        return jsx("span", { className: "ao-dag-node", key: id }, agentName(id, edge.root_thread_id));
                       }),
                     ),
                     jsx(SourceBadge, { quality: edge.source_quality }),
@@ -506,7 +561,8 @@
         var eventLabels = {
           spawn: "创建子 Agent", correction: "上级纠偏", resume: "恢复工作", wait: "等待结果",
           close: "关闭 Agent", activity: "Agent 活动", stopped: "已停止（结果未知）", finished: "执行完成", failed: "执行失败",
-          interrupted: "执行中断", state: "状态变化",
+          interrupted: "执行中断", state: "状态变化", permission: "等待权限审批",
+          session_start: "主任务开始 / 恢复", session_end: "主任务结束",
         };
         var events = (props.events || []).slice(-40).reverse();
         return jsx(
@@ -520,7 +576,7 @@
                 events.map(function (event) {
                   return jsx(
                     "li",
-                    { key: event.event_id, className: "ao-timeline-item" },
+                    { key: (event.root_thread_id || "") + ":" + event.event_id, className: "ao-timeline-item" },
                     jsx("span", { className: "ao-timeline-dot ao-dot-event-" + event.event_type }),
                     jsx(
                       "div",
@@ -532,6 +588,9 @@
                         jsx(SourceBadge, { quality: event.source_quality }),
                         jsx("time", null, relativeTime(event.observed_at)),
                       ),
+                      event.root_thread_id
+                        ? jsx("span", { className: "ao-run-chip ao-timeline-run" }, rootLabel(event.root_thread_id))
+                        : null,
                       jsx(
                         "p",
                         null,
@@ -608,7 +667,7 @@
           jsx(
             "div",
             { className: "ao-scope-note", role: "note" },
-            "统计口径：只有 Kandev 原生事件和 Codex 实时 Hook 计入“真实工作中”；Codex app-server 仅补全持久化历史，Kandev 任务/会话仍是推断。历史存在绝不冒充实时运行。",
+            "统计口径：只有 Kandev 原生事件和 Codex 实时 Hook 计入“真实工作中”；Hook 是事件驱动通道，不是长连接，空闲且很久没有新事件是正常状态。只有仍声称活跃的任务连续 15 分钟没有生命周期或工具事件时才标为陈旧。Codex app-server 仅补全持久化历史；历史存在绝不冒充实时运行。",
           ),
           jsx(
             "section",
@@ -616,6 +675,7 @@
             jsx(StatCard, { label: "实时 Agent", value: kandevAgents.length + codexAgents.length }),
             jsx(StatCard, { label: "Kandev 原生", value: kandevAgents.length }),
             jsx(StatCard, { label: "Codex 实时", value: codexAgents.length }),
+            jsx(StatCard, { label: "活跃 Codex 任务", value: (data.bridge && data.bridge.active_runs) || 0 }),
             jsx(StatCard, { label: "Codex 历史", value: codexHistoryAgents.length }),
             jsx(StatCard, { label: "真实工作中", value: exactView.summary.working }),
             jsx(StatCard, { label: "已停止待核验", value: exactView.summary.stopped }),
@@ -636,7 +696,8 @@
             jsx(NativeSourceGroup, {
               title: "Codex Desktop 原生子 Agent", agents: codexAgents,
               description: "来自 SubagentStart/Stop 与协作工具 Hook 的实时生命周期。",
-              empty: data.bridge && data.bridge.state === "ready" ? "当前还没有收到子 Agent 生命周期事件。" : "启用 Codex Hook 后显示实时子 Agent。",
+              empty: data.bridge && (data.bridge.state === "active" || data.bridge.state === "idle") ? "当前还没有收到子 Agent 生命周期事件。" : "启用 Codex Hook 后显示实时子 Agent。",
+              groupByRoot: true,
             }),
           ),
           jsx(
@@ -713,8 +774,8 @@
             "data-testid": "agent-observer-main-status",
             title: "打开智能体监控",
           },
-          jsx("span", { className: "ao-live-dot" }),
-          String(exactAgents.length) + " 真实 Agent · " + String(summary.working || 0) + " 工作",
+          jsx("span", { className: "ao-live-dot" + ((summary.working || 0) > 0 ? " ao-live-dot-active" : "") }),
+          String(exactAgents.length) + " 真实 Agent · " + String(summary.working || 0) + " 工作 · " + String((state.data.bridge && state.data.bridge.active_runs) || 0) + " 活跃任务",
         );
       }
 

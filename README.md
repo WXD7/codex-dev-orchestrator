@@ -146,6 +146,8 @@ MCP 暴露十二个纯计算工具：
 
 Kandev 0.91.0 可安装仓库内的 [原生智能体监控插件](integrations/kandev-agent-observer/README.md)。它在 Kandev 侧边栏、任务卡、任务详情顶栏和任务面板显示中文 Agent 职责、进展、困难、依赖、下一步、心跳、执行状态与交付评审，不建立第二套任务数据或看板。
 
+跨项目 Codex 实时事件由 [Codex 智能体监控桥](plugins/codex-agent-observer-bridge/README.md) 提供。项目级 `.codex/hooks.json` 只会在该仓库配置层被当前任务发现；从上级目录或其他仓库启动时不能承担全局事件桥。伴生插件使用 `$PLUGIN_ROOT` 定位自身、自动选择校验通过的本机 Kandev 接收器，并继续要求人在 `/hooks` 审阅信任。`Installed 0 / Active 0` 表示未发现，`Installed 1 / Active 0 / Review 1` 表示等待信任，只有 `Active 1` 才能开始真实生命周期验收。2026-08-26 用户信任全部七类 Hook 后，全新子 Agent 探针已自动进入 Kandev，形成可核对的 `SessionStart → SubagentStart → 工具活动 → SubagentStop` 实时事件链；这次验收不使用历史或合成事件冒充实时状态。
+
 项目级 Codex Skill 位于 `.agents/skills/ai-delivery-governance/`，把契约、验证和证据裁决规则带入兼容 Agent。
 
 详细说明见：
