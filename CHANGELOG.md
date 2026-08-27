@@ -1,6 +1,16 @@
 # 版本记录
 
-本项目采用语义化包版本；产品代号用于表达治理架构代际。`0.2.3` 对应 AI Delivery Governance V2.3。
+本项目采用语义化包版本；产品代号用于表达治理架构代际。`0.2.4` 对应 AI Delivery Governance V2.4。
+
+## [0.2.4] - 2026-08-26（无历史接管与项目隔离）
+
+- 新增根目录 START_HERE_NEW_CODEX.md，提供可直接复制到任意新对话的中文启动指令、工作区路由安装、新项目首次接入、手工验收和信息归属指南。
+- 新增只读 `governance takeover --target <exact-git-root>`，全新对话先绑定唯一 `project_id`，再校验 Git 根、分支、基线、remote、当前/历史来源、一致性断言和冷启动验收。
+- `governance init` 新生成 `DRIVER_BOOTSTRAP.md`、`CURRENT_STATE.json` 和 `EVIDENCE_INDEX.json`；所有必读项目来源必须使用相对路径且经 SHA-256 绑定，重复、绝对、越界或未索引来源一律阻断。
+- 工作区入口改为纯路由：只根据当前 Git 根或人明确指定选项目，目标不唯一时停止，不根据最近对话、UI 记录或兄弟目录顺序猜测。
+- 全局层仅保留通用治理代码、匿名失败模式和评测方法；项目需求、决策、Prompt、证据、Case、预期输出、凭据和当前状态不得跨 `project_id` 传播。
+- Git 身份检查使用剔除 Key/Token/Secret/Password/Credential 的最小环境；接管包禁止对话链接、thread ID 和密钥值依赖。
+- 真实 ephemeral、只读、无旧对话驾驶员已完成一次项目接管并通过机器可校验输出契约；首次运行暴露并修复了 Codex 结构化输出对 `const` 字段必须同时声明 `type` 的兼容性要求。本轮通过治理仓库 220 项和目标项目 114 项回归，产品模型调用为 0。
 
 ## [Kandev 智能体监控 0.4.3] - 2026-08-26（Codex 跨项目实时监控修复）
 

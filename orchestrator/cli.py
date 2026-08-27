@@ -82,6 +82,16 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--target", required=True)
     init.add_argument("--input", default="-", help="Raw contract JSON file, or - for stdin")
     init.add_argument("--output", default="-", help="Result JSON file, or - for stdout")
+    takeover = governance_sub.add_parser(
+        "takeover",
+        help="Verify one project-isolated continuity packet for a fresh conversation",
+    )
+    takeover.add_argument(
+        "--target",
+        default=".",
+        help="Exact Git repository to bind before reading project-specific context",
+    )
+    takeover.add_argument("--output", default="-", help="JSON file, or - for stdout")
     sub.add_parser(
         "governance-mcp",
         help="Expose pure delivery-governance tools over stdio without a database or HTTP service",
@@ -175,6 +185,12 @@ def main(argv=None) -> int:
         if operation == "blueprint":
             _write_json_output("-", integration_blueprint())
             return 0
+        if operation == "takeover":
+            from .continuity import build_takeover_packet
+
+            result = build_takeover_packet(Path(args.target))
+            _write_json_output(args.output, result)
+            return 0 if result.get("ready_for_takeover") else 1
         source = _read_json_input(args.input)
         if operation == "research":
             result = engine.compile_technology_research(source)

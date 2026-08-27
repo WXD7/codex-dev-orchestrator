@@ -28,4 +28,12 @@ python3 run.py governance handoff --input contract-and-plan.json
 python3 run.py governance adjudicate --input evidence.json
 ```
 
+For a fresh conversation or a resumed project, bind to exactly one Git root before reading product context:
+
+```text
+python3 run.py governance takeover --target <exact-git-root>
+```
+
+Continue only when `ready_for_takeover` is true, then read the returned `required_read_order`. Do not choose a target from recency, read sibling project state, or promote project requirements, decisions, prompts, evidence, cases, expected outputs, credentials, or active status into generic governance memory. Only anonymized failure patterns, reusable governance policy, and evaluation methods may cross the project boundary.
+
 Never put a model API key into governance input or an Agent prompt, bypass a permission boundary, mutate an external system, push, merge, deploy, publish, purchase usage, or consume reset credits merely because this skill is active. Keep the locally authenticated development executor distinct from any human-confirmed product runtime that reads its own credential from an environment variable.

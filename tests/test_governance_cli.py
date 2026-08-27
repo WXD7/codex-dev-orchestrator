@@ -139,7 +139,7 @@ class GovernanceCLITests(unittest.TestCase):
             self.assertEqual(status, 0)
             result = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(result["contract_status"], "ready")
-            self.assertEqual(len(result["files"]), 13)
+            self.assertEqual(len(result["files"]), 16)
             self.assertTrue((repo / ".ai-delivery" / "technology-research.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "intent-brief.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "intent-inspection.json").is_file())
@@ -147,6 +147,16 @@ class GovernanceCLITests(unittest.TestCase):
             self.assertTrue((repo / ".ai-delivery" / "delivery-handoff.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "bad-case-registry.json").is_file())
             self.assertTrue((repo / ".ai-delivery" / "calibration-policy.json").is_file())
+            self.assertTrue((repo / ".ai-delivery" / "DRIVER_BOOTSTRAP.md").is_file())
+            self.assertTrue((repo / ".ai-delivery" / "CURRENT_STATE.json").is_file())
+            self.assertTrue((repo / ".ai-delivery" / "EVIDENCE_INDEX.json").is_file())
+            takeover = self.call_with_stdin(
+                ["governance", "takeover", "--target", str(repo)], {}
+            )
+            self.assertTrue(takeover["ready_for_takeover"])
+            self.assertEqual(
+                takeover["isolation"]["cross_project_product_context"], "deny"
+            )
             with self.assertRaisesRegex(FileExistsError, "no files were changed"):
                 main(
                     [

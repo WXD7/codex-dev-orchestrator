@@ -1,4 +1,7 @@
-# AI Delivery Governance V2.3
+# AI Delivery Governance V2.4
+
+> **新建 Codex 对话或在新机器上启用本系统：**请先读
+> [新 Codex 对话启用驾驶员接管系统](START_HERE_NEW_CODEX.md)。
 
 这条分支把原来的“自研多 Agent 看板”重构为一层薄而确定的 AI 交付治理能力。它不再复制成熟产品已经做好的 UI、任务、worktree、会话和 CI，而是把真正缺失的部分做成可复用协议：
 
@@ -22,6 +25,7 @@
 - 从签名账本生成 Review Packet，让人看到证据哈希、阻塞点、影子发现和仍需作出的决定；
 - 第二次仍不收敛、存在争议或即将产生外部/不可逆效果时交给人；
 - 通过无状态 MCP 同时服务 LobeHub、Kandev、Symphony 和 Codex。
+- 用项目内 `CURRENT_STATE.json`、哈希证据索引和只读 takeover 命令，让没有旧对话历史的新驾驶员只接管一个明确 Git 项目。
 
 它自身不调用模型 API，不接受模型 API Key，也不持有任务、审批、分支或 Agent 会话。这不等于禁止被交付产品使用经人确认的模型 API：产品只能从指定环境变量读取密钥，密钥不得进入治理输入、Prompt、日志或 Git。V2.3 的窄运行账本由外部可信控制器持有，只保存阶段产物摘要、签名事件、Agent 进展和恢复指标；控制令牌绝不交给 Agent。
 
@@ -117,6 +121,22 @@ python3 run.py governance init \
 
 该命令只创建 `.ai-delivery/`，且拒绝覆盖已有文件。V2.3 额外生成 `technology-research.json`、`intent-brief.json`、`intent-inspection.json`、`runtime-protocol.json`、`bad-case-registry.json` 和 `calibration-policy.json`，记录开发前调研、技术策略、意图证据、赛马、问题恢复、原子检查点、实时监控、遥测、盲审和学习闭环协议。
 
+V2.4 还会生成 `DRIVER_BOOTSTRAP.md`、`CURRENT_STATE.json` 和
+`EVIDENCE_INDEX.json`。任意全新对话必须先绑定一个精确 Git 根并运行：
+
+```bash
+python3 run.py governance takeover --target /absolute/path/to/the/exact/repository
+```
+
+只有 `ready_for_takeover: true` 才能读取返回的项目内材料。命令验证 Git
+身份、分支/基线、必读文件哈希、当前/历史边界和冷启动验收声明；它不搜索兄弟
+仓库、不读取对话历史或密钥值，也不会取得 push、付费调用或外部操作权限。
+
+隔离规则是“双向”的：具体项目的需求、决策、Prompt、证据、Bad Case、预期
+输出和运行状态只能留在该项目；本仓库只保留通用治理代码、匿名失败模式和可复用
+评测方法。工作区根的 `AGENTS.md` 只负责选择唯一项目，不保存任何产品状态。
+完整设计见 [V2.4 项目连续性与隔离](docs/V2_4_PROJECT_CONTINUITY.md)。
+
 ## 接入 LobeHub 或 Kandev
 
 启动无状态治理 MCP：
@@ -152,7 +172,9 @@ Kandev 0.91.0 可安装仓库内的 [原生智能体监控插件](integrations/k
 
 详细说明见：
 
-- [V2.3 版本说明](CHANGELOG.md)
+- [V2.4 版本说明](CHANGELOG.md)
+- [新 Codex 对话启用指南](START_HERE_NEW_CODEX.md)
+- [V2.4 项目连续性与隔离](docs/V2_4_PROJECT_CONTINUITY.md)
 - [V2.3 技术调研与有界赛马](docs/V2_3_TECH_RESEARCH_RACE.md)
 - [V2.2 意图对齐实现](docs/V2_2_INTENT_ALIGNMENT.md)
 - [新架构](docs/ARCHITECTURE.md)

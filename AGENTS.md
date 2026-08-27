@@ -15,6 +15,16 @@
 - The former Python board and scheduler are compatibility-only. Preserve their tests and safety invariants until a separately approved removal, but do not add new product features to that UI or task database.
 - Keep the Python runtime dependency-free on Python 3.9+ and add or update `unittest` coverage for behavior changes.
 
+## Conversation-independent project boundary
+
+- For any fresh Codex conversation that needs to activate or explain this system, read START_HERE_NEW_CODEX.md first. It is the human-visible entrypoint; the rules below remain authoritative.
+- This repository owns generic governance code, protocols, anonymized failure patterns, and reusable evaluation methods. It must not become a memory store for one product project's live requirements, prompts, expected outputs, evidence, credentials, or current decisions.
+- Before acting on a product repository, bind to one exact Git root and run `python3 run.py governance takeover --target <exact-git-root>` from this governance repository. Continue only when it returns `ready_for_takeover: true`.
+- Never select a product by recent conversation, most-recently-used UI state, sibling directory order, or a remembered thread. If the target is not unique, stop and ask the human to name it.
+- Read product context only from the selected repository's returned `required_read_order`. Never search sibling repositories for a missing project fact.
+- A lesson may be promoted into this repository only after removing project IDs, domain facts, customer material, provider-specific active choices, prompts, expected outputs, credentials, case payloads, and current delivery state. Historical domain fixtures already present in this repository are non-runtime test data and must never be auto-loaded into another project's takeover.
+- Changes that improve the driver, governance protocol, routing, isolation, or evaluation belong here. Changes that describe what one product should do belong in that product's repository.
+
 ## Legacy compatibility invariants
 
 - Keep the compatibility HTTP server bound to loopback by default and keep every task execution in an isolated Git worktree.
